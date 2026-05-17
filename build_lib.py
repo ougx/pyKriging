@@ -31,6 +31,7 @@ from pathlib import Path
 SOURCES = [
     "common.f90",
     "utils.F90",
+    "progress_bar.F90",
     "rotation.f90",
     "variogram.f90",
     "kdtree2_maxidx.f90",
@@ -46,9 +47,9 @@ SOURCES = [
 # ---------------------------------------------------------------------------
 FLAGS = {
     "gfortran": {
-        "release": ["-O2", "-fPIC", "-fdefault-real-8", "-fopenmp"],
+        "release": ["-O2", "-fPIC", "-fdefault-real-8", "-fopenmp", "-cpp", "-fbacktrace", "-ffree-line-length-none"],
         "debug":   ["-O0", "-g", "-fPIC", "-fdefault-real-8", "-fopenmp",
-                    "-Wall", "-fcheck=all", "-fbacktrace"],
+                    "-Wall", "-fcheck=all", "-fbacktrace", "-cpp", "-ffree-line-length-none"],
         "shared":  ["-shared"],
         "implib":  [],   # gfortran uses -Wl,--out-implib on Windows
     },
@@ -97,8 +98,8 @@ def build(compiler: str, opt: str, fortran_dir: Path, out_dir: Path):
 
     # Extra Windows linker flag for gfortran to produce an import library
     extra = []
-    if sys.platform == "win32" and compiler == "gfortran":
-        extra = [f"-Wl,--out-implib,{out_dir / 'kriging.lib'}"]
+    # if sys.platform == "win32" and compiler == "gfortran":
+    #     extra = [f"-Wl,--out-implib,{out_dir / 'kriging.lib'}"]
 
     cmd = (
         [compiler]
