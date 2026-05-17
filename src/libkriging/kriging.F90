@@ -646,7 +646,6 @@
           end do
         end if
       end if
-      print*, "inear", inear(1:nnear)
       ! finally check maximum distance
       mask = dist(1:nnear)<=maxdist
       if (any(.not. mask)) then

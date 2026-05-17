@@ -17,8 +17,8 @@ gfortran -cpp -fbacktrace -ffree-line-length-none -O2 -fdefault-real-8 -fPIC  -s
    progress_bar.F90 ^
    solver.f90 ^
    kriging.F90 ^
-   test0_endtoend.f90 ^
-   -o test0_endtoend
+   kriging_capi.f90 ^
+   -o ..\pykriging\kriging.dll
 
 
 pause

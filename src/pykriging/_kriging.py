@@ -71,7 +71,7 @@ _krige_destroy     = _cfun("krige_destroy",     [_ptr_int64])
 _krige_initialize  = _cfun("krige_initialize",  [
     ctypes.c_int64,                              # handle
     _c_int, _c_int, _c_int, _c_int, _c_int,     # ndim, nvar, ndrift, unbias, nsim
-    _c_int, _c_int, _c_int, _c_int, _c_int, _c_int,  # flags (6 booleans as int)
+    _c_int, _c_int, _c_int, _c_int, _c_int, _c_int, _c_int,  # flags (6 booleans as int)
     _c_char_p,                                   # weight_file
     _ptr_dbl,                                    # bounds[2]
     _c_double,                                   # sk_mean
@@ -217,6 +217,7 @@ class Kriging:
         use_old_weight: bool = False,
         store_weight: bool = False,
         cross_validation: bool = False,
+        write_mat: bool = False,
         verbose: bool = False,
         weight_file: str = "",
         bounds: Optional[tuple] = None,
@@ -246,6 +247,8 @@ class Kriging:
             Write computed weights to ``weight_file`` (skips estimate_block).
         cross_validation : bool
             Leave-one-out cross-validation mode.
+        write_mat : bool
+            Write matrix for debugging.
         verbose : bool
             Print progress messages.
         weight_file : str
@@ -281,6 +284,7 @@ class Kriging:
             _c_int(int(use_old_weight)),
             _c_int(int(store_weight)),
             _c_int(int(cross_validation)),
+            _c_int(int(write_mat)),
             _c_int(int(verbose)),
             weight_file.encode("utf-8") if weight_file else b"",
             _dptr(c_bounds),
