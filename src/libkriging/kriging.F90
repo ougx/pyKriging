@@ -138,7 +138,7 @@
     allocate(self%block)
     if (self%nsim>0) self%ivar0 = 0
     allocate(self%vgm(self%ivar0:nvar, self%ivar0:nvar))
-    call init_nan()
+    ! call init_nan()
     ! sanity check
     if (self%use_old_weight .and. self%weight_file=="") stop "ERROR: use_old_weight requires weight_file to be specified"
     if (self%store_weight .and. self%weight_file=="") stop "ERROR: store_weight requires weight_file to be specified"
@@ -164,7 +164,7 @@
     real   , intent(in), optional :: localnugget(:)    ! additional nugget at each block added to the global nugget
     ! local
     integer               :: ngrid, nn, nb
-    integer               :: iblock, igrid, idim, isim
+    integer               :: iblock, igrid, idim
 
     if (self%obs(1)%n==0) error stop 'Observation needs to be set first.'
     if (present(block_type)) self%block%block_type = block_type
@@ -197,6 +197,7 @@
         allocate(self%block%iblockpnt, source=[(igrid, igrid=1,ngrid)])
         allocate(self%grid%weight(ngrid)); self%grid%weight=1.0
       else if (self%block%block_type == -4) then
+        if (.not. present(blocksize)) error stop 'blocksize needs to be provided when block_type=-4.'
         nb = (4**ndim)
         self%block%n = ngrid
         allocate(self%block%coord, source=coord)
@@ -298,8 +299,6 @@
     real, intent(in), optional    :: variance(:), maxdist
 
     ! local
-    integer               :: i, nobs
-    real   , allocatable  :: temp(:,:)
 
     if (ndim == 0) then
       ndim = size(coord, 1)
@@ -307,8 +306,7 @@
       if (ndim /= size(coord, 1)) error stop 'ndim /= size(coord, 1) for grid'   ! TODO: check coord has the same ndim
     end if
     associate(obs=>self%obs(ivar))
-      nobs = size(coord, 2)
-      obs%n = nobs
+      obs%n = size(coord, 2)
       if (present(nmax)) then
         obs%nmax = nmax
       else
@@ -318,7 +316,7 @@
       if (present(variance)) then
         allocate(obs%variance, source=variance)
       else
-        allocate(obs%variance(nobs))
+        allocate(obs%variance(obs%n))
         obs%variance = 0.0
       end if
       allocate(obs%value, source=value)
@@ -510,7 +508,7 @@
     class(t_kriging)      :: self
     ! local
     type(t_kriging_ctx), allocatable :: ctx   ! one per thread
-    integer               :: ib, ivar, ifile
+    integer               :: ib
     real, allocatable     :: temp(:,:)
 
     ! allocation
@@ -646,7 +644,7 @@
     integer, intent(in)           :: ir0, ic0   ! starting row and column
 
     ! local
-    integer                       :: i, j, k, k1, istart, n, n2
+    integer                       :: i, j, k, k1, istart
     real                          :: lag(3)=0.0, tmp
 
     associate( &
@@ -693,80 +691,79 @@
     class(t_kriging)      :: self
     class(t_kriging_ctx)  :: ctx
     ! local
-    integer               :: nvar, ivar, jvar, ivar0
+    integer               :: nvar, ivar, jvar
     integer               :: irow1, irow2, icol1, icol2
 
     ! search for neighbor
     associate(nvar=>self%nvar, dist=>ctx%sqdist, npp=>ctx%npp)
-    npp = 0
-    ! exact-match detection
-    do ivar = 1, nvar
-      call self%search_neighbors(ivar, ctx)
-      npp = npp + ctx%nnear(ivar)
-      if (ivar==1 .and. minval(dist(1:ctx%nnear(ivar)))<=EPSLON) then
-        npp = 1    ! signal exact match
-        ctx%x=0.0
-        ctx%x(:,1)=1.0
-        ctx%nnear(ivar) = 1
-        ctx%inear(1,ivar) = ctx%inear(minloc(dist(1:ctx%nnear(ivar)), dim=1),ivar)
-        ctx%nnear(0) = 0
-        self%block%variance(ctx%iblock) = self%obs(1)%variance(ctx%inear(1,ivar)) + self%block%localnugget(ctx%iblock)
-        do jvar = 2, nvar
-          ctx%nnear(jvar) = 0
-        end do
-        return
-      end if
-    end do
-    end associate
-
-    ! check if enough neighbors
-    if (ctx%nnear(0) + ctx%nnear(1) == 0) then
-      write(*,*) 'not enough neighbors for kriging at block ', ctx%iblock
-      error stop
-    end if
-
-    ! set up matrix
-    associate( &
-    iblock=>ctx%iblock, &
-    matA=>ctx%matA, &
-    rhsB=>ctx%rhsB, &
-    inear=>ctx%inear, &
-    nnear=>ctx%nnear, &
-    matsize=>ctx%matsize, &
-    npp=>ctx%npp, &
-    ndrift=>self%ndrift)
-      matsize = npp + self%unbias + ndrift
-      irow1 = 0
-      do ivar = self%ivar0, nvar
-        irow2 = irow1 + nnear(ivar)
-        icol1 = 0
-        call self%calc_covariance(ctx,irow1,icol1,ivar, -1)
-        do jvar = self%ivar0, nvar
-          icol2 = icol1 + nnear(jvar)
-          if (jvar>=ivar .and. nnear(jvar)>0) then
-            call self%calc_covariance(ctx,irow1,icol1,ivar,jvar)
-          end if
-          icol1 = icol2
-        end do
-        if (ndrift>0) then
-          icol2 = icol1+ndrift
-          matA(icol1+1:icol2, irow1+1:irow2) = self%obs(ivar)%drift(:, inear(1:nnear(ivar), ivar))
+      npp = 0
+      ! exact-match detection
+      do ivar = 1, nvar
+        call self%search_neighbors(ivar, ctx)
+        npp = npp + ctx%nnear(ivar)
+        if (ivar==1 .and. minval(dist(1:ctx%nnear(ivar)))<=EPSLON) then
+          npp = 1    ! signal exact match
+          ctx%x=0.0
+          ctx%x(:,1)=1.0
+          ctx%nnear(ivar) = 1
+          ctx%inear(1,ivar) = ctx%inear(minloc(dist(1:ctx%nnear(ivar)), dim=1),ivar)
+          ctx%nnear(0) = 0
+          self%block%variance(ctx%iblock) = self%obs(1)%variance(ctx%inear(1,ivar)) + self%block%localnugget(ctx%iblock)
+          do jvar = 2, nvar
+            ctx%nnear(jvar) = 0
+          end do
+          return
         end if
-        irow1 = irow2
       end do
-      if (ndrift>0) rhsB(1, npp+1:npp+ndrift) = self%block%drift(:, iblock)
 
-      if (self%unbias==1) then
-        matA(matsize, 1:ctx%npp) = 1.0
-        rhsB(1, matsize) = 1.0
+      ! check if enough neighbors
+      if (ctx%nnear(0) + ctx%nnear(1) == 0) then
+        write(*,*) 'not enough neighbors for kriging at block ', ctx%iblock
+        error stop
       end if
-      ! assign values to lower triangle from upper triangle (assuming symmetric matrix)
-      do irow1 = 1, npp
-        do icol1 = irow1+1, npp
-          matA(irow1, icol1) = matA(icol1, irow1)
+
+      ! set up matrix
+      associate( &
+      iblock=>ctx%iblock, &
+      matA=>ctx%matA, &
+      rhsB=>ctx%rhsB, &
+      inear=>ctx%inear, &
+      nnear=>ctx%nnear, &
+      matsize=>ctx%matsize, &
+      ndrift=>self%ndrift)
+        matsize = npp + self%unbias + ndrift
+        irow1 = 0
+        do ivar = self%ivar0, nvar
+          irow2 = irow1 + nnear(ivar)
+          icol1 = 0
+          call self%calc_covariance(ctx,irow1,icol1,ivar, -1)
+          do jvar = self%ivar0, nvar
+            icol2 = icol1 + nnear(jvar)
+            if (jvar>=ivar .and. nnear(jvar)>0) then
+              call self%calc_covariance(ctx,irow1,icol1,ivar,jvar)
+            end if
+            icol1 = icol2
+          end do
+          if (ndrift>0) then
+            icol2 = icol1+ndrift
+            matA(icol1+1:icol2, irow1+1:irow2) = self%obs(ivar)%drift(:, inear(1:nnear(ivar), ivar))
+          end if
+          irow1 = irow2
         end do
-      end do
-      matA(npp+1:matsize, npp+1:matsize) = 0.0
+        if (ndrift>0) rhsB(1, npp+1:npp+ndrift) = self%block%drift(:, iblock)
+
+        if (self%unbias==1) then
+          matA(matsize, 1:ctx%npp) = 1.0
+          rhsB(1, matsize) = 1.0
+        end if
+        ! assign values to lower triangle from upper triangle (assuming symmetric matrix)
+        do irow1 = 1, npp
+          do icol1 = irow1+1, npp
+            matA(irow1, icol1) = matA(icol1, irow1)
+          end do
+        end do
+        matA(npp+1:matsize, npp+1:matsize) = 0.0
+      end associate
     end associate
   end subroutine assemble_linear_system
 
@@ -780,9 +777,8 @@
     !-------------------------
     ! Inputs
     integer               :: info
-    integer               :: i, j, k1, ivar
+    integer               :: i, j, k1
     real                  :: lag(3)
-    logical, allocatable  :: is_grid(:)
 
     associate( &
     iblock=>ctx%iblock, &
@@ -862,7 +858,7 @@
     implicit none
     class(t_kriging)      :: self
     class(t_kriging_ctx)  :: ctx
-    integer               :: ivar, k, knear, ival, nx, nnearb
+    integer               :: ivar, k, nx, nnearb
     real, allocatable     :: v(:)           ! store observation values
     real, allocatable     :: w(:)           ! store weights
     real                  :: avg(max(1, self%nsim)), total_weight(self%ivar0:self%nvar)
