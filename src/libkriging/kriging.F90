@@ -1,4 +1,4 @@
- module kriging
+module kriging
   use, INTRINSIC    :: ieee_arithmetic
   use iso_fortran_env, only: input_unit, error_unit, output_unit
 
@@ -67,10 +67,10 @@
     integer               :: matsize_max = 0      ! maximum size of matrix = nppmax + ndrift + unbias
     real                  :: bounds(2) = [-verylarge, verylarge]
     real                  :: sk_mean = 0.0        ! simple kriging mean
-    type(t_obsgrid)  , allocatable :: obs(:)
-    type(t_grid)     , allocatable :: grid
-    type(t_blockgrid), allocatable :: block
-    type(vgm_struct) , allocatable :: vgm(:,:)
+    type(t_obsgrid)  , pointer :: obs(:)
+    type(t_grid)     , pointer :: grid
+    type(t_blockgrid), pointer :: block
+    type(vgm_struct) , pointer :: vgm(:,:)
   contains
     procedure             :: initialize
     procedure             :: set_obs
@@ -279,7 +279,7 @@
     class(t_kriging)      :: self
     real   , intent(in)   :: drift(:,:)        ! drifts
     errmsg = "t_kriging%set_grid_drift: "
-    if (.not. allocated(self%block)) error stop trim(errmsg)//'Call initialize() before set_grid_drift.'
+    if (.not. associated(self%block)) error stop trim(errmsg)//'Call initialize() before set_grid_drift.'
     if (self%block%n==0) error stop trim(errmsg)//'Grid needs to be set before adding drift.'
     if (self%ndrift==0) error stop trim(errmsg)//'grid/block drift is specified but ndrift==0'
     if (size(drift, 1) /= self%ndrift) error stop trim(errmsg)//'size(drift, 1) /= ndrift'
@@ -341,7 +341,7 @@
     integer, intent(in)   :: ivar              ! index of the variable
     real   , intent(in)   :: drift(:,:)        ! drifts
     errmsg = "t_kriging%set_obs_drift: "
-    if (.not. allocated(self%obs)) error stop trim(errmsg)//'Call initialize() before set_obs_drift.'
+    if (.not. associated(self%obs)) error stop trim(errmsg)//'Call initialize() before set_obs_drift.'
     if (self%obs(ivar)%n==0) error stop trim(errmsg)//'Observation needs to be set before adding drift.'
     if (self%ndrift==0) error stop trim(errmsg)//'Observation drift is specified but ndrift==0'
     if (size(drift, 1) /= self%ndrift) error stop trim(errmsg)//'size(drift, 1) /= ndrift'
@@ -489,8 +489,8 @@
         if (.not. allocated(self%obs(ivar)%drift)) error stop trim(errmsg)//'Observation drift is not set while ndrift > 0.'
       end do
     end if
-    do ivar=self%ivar0, self%nvar
-      do jvar=self%ivar0, self%nvar
+    do ivar=1, self%nvar
+      do jvar=1, self%nvar
         if (self%vgm(jvar, ivar)%nstruct==0) error stop trim(errmsg)//'Variogram is not set.'
       end do
     end do
@@ -536,7 +536,9 @@
       ! start the block loop
       if (verbose) print*, "Starting Kriging loop"
 
-      !$OMP PARALLEL DEFAULT(SHARED) PRIVATE(ctx)
+      ! SGSIM requires sequential block processing (each block conditions on
+      ! previously simulated values). Disable OMP parallelism for SGSIM.
+      !$OMP PARALLEL DEFAULT(SHARED) PRIVATE(ctx) IF(self%nsim==0 .and. .not. self%store_weight)
       allocate(ctx)               ! Required OpenMP 4.0+ for allocatable private variable
       call ctx%initialize(self)
       !$OMP DO SCHEDULE(DYNAMIC, 1)
@@ -594,8 +596,6 @@
       xloc   =>self%block%coord(:, ctx%iblock:ctx%iblock), &
       inear  =>ctx%inear(:,ivar), & ! obs
       nnear  =>ctx%nnear(ivar), &   ! obs
-      inearb =>ctx%inear(:,0), &    ! block
-      nnearb =>ctx%nnear(0), &      ! block
       dist   =>ctx%sqdist, &
       maxdist=>self%obs(ivar)%maxdist, &
       rotmat =>self%obs(ivar)%rotmat)
@@ -608,13 +608,14 @@
       end if
 
       if (nsim>0 .and. ivar==1) then
+        associate(inearb =>ctx%inear(:,0), nnearb =>ctx%nnear(0))
         if (nmax<nobs+iblock) then
           call kdtree2_n_nearest_maxidx(self%obs(ivar)%tree, newloc(:,1), nmax, results, nobs+iblock-1)
           allocate(is_obs, source=results%idx<=nobs)
           nnear            = count(is_obs)
           nnearb           = nmax - nnear
           inear (1:nnear)  = pack(results%idx, is_obs)
-          inearb(1:nnearb) = pack(results%idx, .not. is_obs)
+          inearb(1:nnearb) = pack(results%idx, .not. is_obs) - nobs
           dist(1:nnear)    = pack(results%dis, is_obs)    ! assume no co-located blocks, so estimated blocks will never exactly match the block to be estimated
         else
           ! no search
@@ -623,6 +624,7 @@
           ! inear no need to touch until search is needed
           dist(1:nnear) = rotated_dists(rotmat, ndim, newloc(:,1), obsloc(:,1:nnear))
         end if
+        end associate
       else
         if (nmax<nobs) then
           call kdtree2_n_nearest       (self%obs(ivar)%tree, newloc(:,1), nmax, results)
@@ -666,14 +668,19 @@
     ! local
     integer                       :: i, j, k, k1, istart
     real                          :: lag(3)=0.0, tmp
+    class(t_data), pointer        :: obs1, obs2
 
     associate( &
       ndim=>self%ndim, &
-      obs=>self%obs(ivar), &
       nnear=>ctx%nnear(ivar), &
       inear=>ctx%inear(1:ctx%nnear(ivar), ivar), &
       rs=>self%block%rangescale(ctx%iblock), &
       ln=>self%block%localnugget(ctx%iblock))
+      if (ivar==0) then
+        obs1 => self%block
+      else
+        obs1 => self%obs(ivar)
+      end if
       if (jvar==-1) then
         ! setting rhsB: calculating covariance between data and block to be eastimated
         associate(vgm=>self%vgm(1, ivar))
@@ -681,7 +688,7 @@
             tmp = 0
             k1 = self%block%iblockpnt(ctx%iblock)-1
             do k = 1, self%block%nblockpnt(ctx%iblock)
-              lag(1:ndim) = obs%coord(:,inear(i)) - self%grid%coord(:, k1+k)
+              lag(1:ndim) = obs1%coord(:,inear(i)) - self%grid%coord(:, k1+k)
               tmp = tmp + vgm%cov_lag(lag/rs) * self%grid%weight(k1+k)
             end do
             ctx%rhsB(1, ir0+i) = tmp
@@ -689,16 +696,21 @@
         end associate
       else
         ! setting matA: calculating covariance between data points
-        associate(obs2=>self%obs(jvar), nnear2=>ctx%nnear(jvar), inear2=>ctx%inear(1:ctx%nnear(jvar), jvar), vgm=>self%vgm(jvar, ivar))
+        associate(nnear2=>ctx%nnear(jvar), inear2=>ctx%inear(1:ctx%nnear(jvar), jvar), vgm=>self%vgm(jvar, ivar))
+          if (jvar==0) then
+            obs2 => self%block
+          else
+            obs2 => self%obs(jvar)
+          end if
           do i = 1, nnear
             if (ivar==jvar) then
               istart = i + 1
-              ctx%matA(ic0+i, ir0+i) = vgm%cov0 + obs%variance(inear(i)) + ln
+              ctx%matA(ic0+i, ir0+i) = vgm%cov0 + obs1%variance(inear(i)) + ln
             else
               istart = 1
             end if
             do j = istart, nnear2
-              lag(1:ndim) = obs%coord(:,inear(i)) - obs2%coord(:,inear2(j))
+              lag(1:ndim) = obs1%coord(:,inear(i)) - obs2%coord(:,inear2(j))
               ctx%matA(ic0+j, ir0+i) = vgm%cov_lag(lag/rs)
             end do
           end do
@@ -1043,6 +1055,4 @@
     deallocate(self%vgm)
   end subroutine finalize
 
-
 end module kriging
-
