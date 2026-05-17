@@ -54,7 +54,7 @@ def pc2d_obs():
 def pc2d_grid():
     """4800 grid nodes in 2D with reference kriging results (grid2d.csv)."""
     df = pd.read_csv(data_path("grid2d.csv"))
-    return df[["x", "y"]].values, df["result"].values
+    return df[["x", "y"]].values, df[["estimate","variance"]].values
 
 
 @pytest.fixture(scope="session")
