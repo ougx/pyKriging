@@ -539,7 +539,9 @@ module kriging
 
       ! start the block loop
       if (verbose) print*, "Starting Kriging loop"
-
+#ifdef __INTEL_COMPILER
+      if (verbose) open (unit=6, carriagecontrol='fortran')
+#endif
       ! SGSIM requires sequential block processing (each block conditions on
       ! previously simulated values). Disable OMP parallelism for SGSIM.
       !$OMP PARALLEL DEFAULT(SHARED) PRIVATE(ctx) IF(self%nsim==0 .and. .not. self%store_weight)
@@ -567,7 +569,11 @@ module kriging
       end do
       !$OMP END DO
       !$OMP END PARALLEL
-      if (verbose) print*,""
+#ifdef __INTEL_COMPILER
+      if (verbose) close(6)
+#else
+      if (verbose) print *, "" ! start a new line below the progress bar
+#endif
       if (self%nsim>0) then
         allocate(temp, source=self%block%estimate)
         do ib = 1, self%block%n

@@ -47,6 +47,16 @@ class TestSGSIM:
         assert not np.allclose(sims[0], sims[1]), \
             "Two SGSIM realisations are identical — likely a bug"
 
+    def test_realisations_differ_seperate_seeds(self, pc2d_obs, pc2d_grid):
+        """Different realisations must not be identical."""
+        coord, value   = pc2d_obs
+        grid_coord, _  = pc2d_grid
+        sims = [sequential_gaussian_simulation(
+            coord, value, grid_coord, _VGM_PC2D, nsim=1, nmax=20, seed=seed*100+1
+        ) for seed in range(2)]
+        assert not np.allclose(sims[0], sims[1]), \
+            "Two SGSIM realisations are identical — likely a bug"
+
     def test_seed_reproducibility(self, pc2d_obs, pc2d_grid):
         """Same seed must produce identical results."""
         coord, value   = pc2d_obs
@@ -74,7 +84,6 @@ class TestSGSIM:
         ens_mean = sims.mean(axis=0)
 
         est, _ = ordinary_kriging(coord, value, grid_coord, _VGM_PC2D, nmax=20)
-
         corr = np.corrcoef(ens_mean, est)[0, 1]
         assert corr > 0.90, (
             f"Ensemble mean correlation with kriging = {corr:.3f} (expected > 0.90). "
