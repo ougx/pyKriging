@@ -614,7 +614,8 @@ module kdtree2_module
   private
   ! everything else is private.
 
-  type(tree_search_record), save, target :: sr   ! A GLOBAL VARIABLE for search
+  type(tree_search_record), save, target :: sr   ! one instance per thread
+  !$OMP THREADPRIVATE(sr)
 
 contains
 
@@ -2155,4 +2156,3 @@ contains
   end subroutine process_terminal_node_fixedball_maxidx
 
 end module kdtree2_module
-
