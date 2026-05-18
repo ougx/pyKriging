@@ -1,11 +1,12 @@
 module progress_bar
 contains
-subroutine progress(r)
+subroutine progress(i, n)
   implicit none
+  integer        ::i, n
   real           :: r
   integer        ::j,k
   character(len=17)::bar="???% |          |"
-  j = int(r * 100)
+  j = int(real(i)/real(n) * 100)
   write(unit=bar(1:3),fmt="(i3)") j
   do k=1, int(j/10)
     bar(6+k:6+k)="*"

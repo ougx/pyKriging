@@ -558,7 +558,7 @@ module kriging
       !$OMP DO SCHEDULE(DYNAMIC, 1)
       do ib = 1, nb
         ctx%iblock = ib
-        if (verbose) call progress(real(ib)/real(nb))
+        if (verbose) call progress(ib, nb)
         if (self%use_old_weight) then
           call self%read_weight(ctx)
         else
@@ -568,11 +568,8 @@ module kriging
           if (ctx%npp>1) call self%solve_linear_system(ctx) ! use one observation when self%npp=1
           call ctx%assign_weight(self)
         end if
-        if (self%store_weight) then
-          call self%write_weight(ctx)
-        else
-          call self%estimate_block(ctx)
-        end if
+        if (self%store_weight) call self%write_weight(ctx)
+        call self%estimate_block(ctx)
         if (self%write_mat) call ctx%write_matrix(self)
       end do
       !$OMP END DO
@@ -582,6 +579,7 @@ module kriging
 #else
       if (verbose) print *, "" ! start a new line below the progress bar
 #endif
+      if (verbose) print*, "Kriging completed."
       if (self%nsim>0) then
         allocate(temp, source=self%block%estimate)
         do ib = 1, self%block%n
