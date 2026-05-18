@@ -518,7 +518,7 @@ module kriging
       else
         if (self%store_weight) then
           open(newunit=ifile, file=trim(self%weight_file), status='replace')
-          write(ifile,*) self%block%n,self%nvar,self%obs%nmax
+          write(ifile,*) self%block%n,self%nvar,(self%obs(ivar)%nmax,ivar=1,self%nvar)
         end if
       end if
       if (self%nsim>0) then
@@ -553,6 +553,11 @@ module kriging
       ! SGSIM requires sequential block processing (each block conditions on
       ! previously simulated values). Disable OMP parallelism for SGSIM.
       !$OMP PARALLEL DEFAULT(SHARED) PRIVATE(ctx) IF(self%nsim==0 .and. .not. self%store_weight)
+      if (verbose) then
+#ifdef _OPENMP
+        print*, "OMP_NUM_THREADS=", omp_get_num_threads()
+#endif
+      end if
       allocate(ctx)               ! Required OpenMP 4.0+ for allocatable private variable
       call ctx%initialize(self)
       !$OMP DO SCHEDULE(DYNAMIC, 1)

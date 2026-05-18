@@ -26,7 +26,7 @@ import ctypes
 import os
 import numpy as np
 from typing import Optional
-
+import random
 # ---------------------------------------------------------------------------
 # Load the shared library (platform-aware)
 # ---------------------------------------------------------------------------
@@ -76,6 +76,7 @@ _krige_initialize  = _cfun("krige_initialize",  [
     _c_char_p,                                   # weight_file
     _ptr_dbl,                                    # bounds[2]
     _c_double,                                   # sk_mean
+    _c_int,                                      # seed
 ])
 _krige_set_obs     = _cfun("krige_set_obs", [
     ctypes.c_int64,                              # handle
@@ -267,6 +268,7 @@ class Kriging:
         weight_file: str = "",
         bounds: Optional[tuple] = None,
         sk_mean: float = 0.0,
+        seed: Optional[int] = None,
     ):
         """
         Parameters
@@ -317,7 +319,7 @@ class Kriging:
         import sys
         _huge = sys.float_info.max
         c_bounds = _farray(bounds if bounds is not None else [-_huge, _huge])
-
+        seed = seed or random.randint(0, 2**32-1)
         _krige_initialize(_h(self._handle),
             _c_int(ndim),
             _c_int(nvar),
@@ -334,6 +336,7 @@ class Kriging:
             weight_file.encode("utf-8") if weight_file else b"",
             _dptr(c_bounds),
             _c_double(sk_mean),
+            _c_int(seed),
         )
 
         # store for convenience
@@ -900,13 +903,11 @@ def sequential_gaussian_simulation(
     simulations : ndarray, shape (nsim, ngrid)
         Each row is one realisation in the original (non-randomised) block order.
     """
-    if seed is not None:
-        np.random.seed(seed)
 
     ndim  = obs_coord.shape[1]   # (nobs, ndim) -> ndim is axis 1
     ngrid = grid_coord.shape[0]  # (ngrid, ndim) -> ngrid is axis 0
 
-    k = Kriging(ndim=ndim, nvar=1, nsim=nsim)
+    k = Kriging(ndim=ndim, nvar=1, nsim=nsim, seed=seed)
     k.set_obs(ivar=1, coord=obs_coord, value=obs_value, nmax=nmax)
     k.set_vgm(ivar=1, jvar=1, spec=variogram_spec)
     k.set_grid(coord=grid_coord)

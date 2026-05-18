@@ -105,11 +105,11 @@ contains
       ndim, nvar, ndrift, unbias, nsim, &
       anisotropic_search, weight_correction, use_old_weight, &
       store_weight, cross_validation, write_mat, verbose, &
-      weight_file, bounds, sk_mean) &
+      weight_file, bounds, sk_mean, seed) &
       bind(C, name='krige_initialize')
 
     integer(c_intptr_t), intent(in), value :: handle
-    integer(c_int),      intent(in), value :: ndim, nvar, ndrift, unbias, nsim
+    integer(c_int),      intent(in), value :: ndim, nvar, ndrift, unbias, nsim, seed
     integer(c_int),      intent(in), value :: anisotropic_search, weight_correction
     integer(c_int),      intent(in), value :: use_old_weight, store_weight
     integer(c_int),      intent(in), value :: cross_validation, write_mat, verbose
@@ -135,7 +135,8 @@ contains
       verbose            = l(verbose), &
       weight_file        = c2fstr(weight_file), &
       bounds             = real(bounds), &
-      sk_mean            = real(sk_mean))
+      sk_mean            = real(sk_mean), &
+      seed               = int(seed))
   end subroutine krige_initialize
 
   !=============================================================================
