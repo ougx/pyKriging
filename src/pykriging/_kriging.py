@@ -305,6 +305,8 @@ class Kriging:
             None means no clipping (uses Fortran defaults: [-huge, +huge]).
         sk_mean : float
             Global mean for simple kriging (unbias=0). Default 0.0.
+        seed : int, optional
+            Random seed.
         """
         # Allocate Fortran object.
         # Store the handle as a plain Python int so every call site wraps
@@ -320,6 +322,8 @@ class Kriging:
         _huge = sys.float_info.max
         c_bounds = _farray(bounds if bounds is not None else [-_huge, _huge])
         seed = seed or random.randint(0, 2**32-1)
+        # set random seed in python
+        random.seed(seed)
         _krige_initialize(_h(self._handle),
             _c_int(ndim),
             _c_int(nvar),
@@ -346,6 +350,17 @@ class Kriging:
         self.nsim   = nsim
         self.verbose = verbose
 
+        self.unbias = unbias
+        self.anisotropic_search = anisotropic_search
+        self.weight_correction = weight_correction
+        self.use_old_weight = use_old_weight
+        self.store_weight = store_weight
+        self.cross_validation = cross_validation
+        self.write_mat = write_mat
+        self.weight_file = weight_file
+        self.bounds = c_bounds
+        self.sk_mean = sk_mean
+        self.seed = seed
     # ------------------------------------------------------------------
     def set_obs(
         self,
@@ -621,13 +636,13 @@ class Kriging:
         nb = _c_int(0)
         _krige_get_nblocks(_h(self._handle), ctypes.byref(nb))
         nblocks = nb.value
-
+        rng = np.random.default_rng(self.seed)
         if randpath is not None:
             rp_f = np.ascontiguousarray(randpath, dtype=np.int32)
         else:
             # random permutation of 1..nblocks (1-based for Fortran)
             rp_f = np.ascontiguousarray(
-                np.random.permutation(nblocks) + 1, dtype=np.int32)
+                rng.permutation(nblocks) + 1, dtype=np.int32)
 
         if sample is not None:
             s_f    = _farray(sample)
@@ -636,7 +651,7 @@ class Kriging:
         else:
             nsim_c = self.nsim
             n_s    = nblocks
-            s_f    = _farray(np.random.standard_normal((nsim_c, n_s)))
+            s_f    = _farray(rng.standard_normal((nsim_c, n_s)))
 
         _krige_set_sim(_h(self._handle),
             _c_int(nblocks), _iptr(rp_f),         # nblocks covers both randpath and sample
@@ -877,6 +892,8 @@ def sequential_gaussian_simulation(
     variogram_spec: str,
     nsim: int,
     nmax: int = 20,
+    randpath: Optional[np.ndarray] = None,
+    sample: Optional[np.ndarray] = None,
     seed: Optional[int] = None,
 ) -> np.ndarray:
     """
@@ -912,7 +929,7 @@ def sequential_gaussian_simulation(
     k.set_vgm(ivar=1, jvar=1, spec=variogram_spec)
     k.set_grid(coord=grid_coord)
     # set_sim with no args: Python generates random path and N(0,1) samples
-    k.set_sim()
+    k.set_sim(randpath, sample)
     k.set_search(ivar=1)
     k.solve()
 

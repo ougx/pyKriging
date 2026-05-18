@@ -142,7 +142,10 @@ module kriging
     if (present(sk_mean))            self%sk_mean            = sk_mean
     if (present(cross_validation))   self%cross_validation   = cross_validation
     if (present(verbose))            self%verbose            = verbose
-    if (present(seed   ))            call random_seed_initialize(seed)
+    if (present(seed   )) then
+      if (self%verbose .and. self%nsim>0) print "(A,I0)", "random seed is set to ", seed
+      call random_seed_initialize(seed)
+    end if
     allocate(self%obs(nvar))
     allocate(self%grid)
     allocate(self%block)
