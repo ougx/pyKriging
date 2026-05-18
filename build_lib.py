@@ -37,8 +37,8 @@ SOURCES = [
     "variogram.f90",
     "kdtree2_maxidx.f90",
     "gaussian_quadrature.f90",
+    "lapack.f",
     "solver.f90",
-    "sposv.f",
     "kriging.F90",
     "kriging_capi.f90",
 ]

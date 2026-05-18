@@ -863,7 +863,8 @@ module kriging
       call kriging_solve( npp, unbias+ndrift, 1, matA, rhsB, x, info)
 
       if (info /= 0) then
-        call gaussian_elimination(npp, unbias+ndrift, 1, matA, rhsB, x, info)
+        call ssysv_fallback(npp, unbias+ndrift, 1, matA, rhsB, x, info)
+        if (self%verbose) print*, "Cholesky fails. Fallback SSYSV is used for block", iblock
       end if
 
       if (info /= 0) then

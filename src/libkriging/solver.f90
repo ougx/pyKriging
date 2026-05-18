@@ -300,6 +300,66 @@ contains
   end subroutine
 
 
+  subroutine ssysv_fallback(n, p, q, matA, rhsB, x, info)
+    ! Fallback solver using LAPACK SSYSV (Bunch-Kaufman LDLᵀ factorisation).
+    ! Called when Cholesky fails — the full augmented kriging system
+    !   [ K   F ]
+    !   [ Fᵀ  0 ]
+    ! is symmetric indefinite, which is exactly the class SSYSV handles.
+    !
+    ! Advantages over gaussian_elimination:
+    !   - Exploits symmetry: only the upper triangle of matA is read,
+    !     roughly halving the flop count vs full LU.
+    !   - Bunch-Kaufman diagonal pivoting is more stable than partial
+    !     pivoting for symmetric indefinite systems.
+    !   - Uses optimised BLAS-3 kernels from the system LAPACK.
+    !
+    ! Same array layout as kriging_solve: matA(n+p,n+p), rhsB(q,n+p), x(q,n+p).
+    implicit none
+
+    integer, intent(in)  :: n, p, q
+    real,    intent(in)  :: matA(n+p, n+p)
+    real,    intent(in)  :: rhsB(q, n+p)
+    real,    intent(out) :: x(q, n+p)
+    integer, intent(out) :: info
+
+    integer :: m, lwork
+    real,    allocatable :: Acopy(:,:), B(:,:), work(:)
+    integer, allocatable :: ipiv(:)
+    integer :: i
+
+    m = n + p
+
+    allocate(Acopy(m,m), B(m,q), ipiv(m))
+
+    ! SSYSV overwrites its matrix and RHS in place — copy both.
+    Acopy = matA
+
+    ! Transpose rhsB(q,m) -> B(m,q) for LAPACK column-major RHS.
+    do i = 1, q
+      B(:, i) = rhsB(i, :)
+    end do
+
+    ! Workspace query.
+    lwork = -1
+    allocate(work(1))
+    call ssysv(uplo, m, q, Acopy, m, ipiv, B, m, work, lwork, info)
+    lwork = int(work(1))
+    deallocate(work)
+    allocate(work(lwork))
+
+    ! Solve.
+    call ssysv(uplo, m, q, Acopy, m, ipiv, B, m, work, lwork, info)
+
+    ! Transpose solution B(m,q) -> x(q,m).
+    if (info == 0) then
+      do i = 1, q
+        x(i, :) = B(:, i)
+      end do
+    end if
+  end subroutine ssysv_fallback
+
+
   subroutine gaussian_elimination(n, p, q, matA, rhsB, x, info)
     ! Fallback full-system solver with partial pivoting.
     ! Same array layout as kriging_solve: matA(n+p,n+p), rhsB(q,n+p), x(q,n+p).
