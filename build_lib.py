@@ -133,6 +133,8 @@ _CAPI_EXPORTS = [
     "krige_set_sim",
     "krige_set_search",
     "krige_prepare",
+    "krige_get_max_threads",
+    "krige_get_num_threads",
     "krige_solve",
     "krige_get_nblocks",
     "krige_get_nsim",

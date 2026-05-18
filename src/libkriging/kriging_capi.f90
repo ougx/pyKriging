@@ -507,4 +507,41 @@ contains
     r = (v == 1_c_int)
   end function l
 
+  !=============================================================================
+  ! krige_get_max_threads / krige_get_num_threads
+  !
+  ! Query the OpenMP thread count from Python so callers can verify that
+  ! parallelism is active without needing to inspect environment variables.
+  !
+  ! When the library is compiled WITHOUT OpenMP (--no-openmp), both routines
+  ! return 1 so Python code can treat the result uniformly.
+  !=============================================================================
+#ifdef _OPENMP
+  subroutine krige_get_max_threads(n) bind(C, name='krige_get_max_threads')
+    use omp_lib
+    integer(c_int), intent(out) :: n
+    n = int(omp_get_max_threads(), c_int)
+  end subroutine krige_get_max_threads
+
+  subroutine krige_get_num_threads(n) bind(C, name='krige_get_num_threads')
+    use omp_lib
+    integer(c_int), intent(out) :: n
+    !$OMP PARALLEL
+    !$OMP SINGLE
+    n = int(omp_get_num_threads(), c_int)
+    !$OMP END SINGLE
+    !$OMP END PARALLEL
+  end subroutine krige_get_num_threads
+#else
+  subroutine krige_get_max_threads(n) bind(C, name='krige_get_max_threads')
+    integer(c_int), intent(out) :: n
+    n = 1_c_int   ! OpenMP not compiled in
+  end subroutine krige_get_max_threads
+
+  subroutine krige_get_num_threads(n) bind(C, name='krige_get_num_threads')
+    integer(c_int), intent(out) :: n
+    n = 1_c_int   ! OpenMP not compiled in
+  end subroutine krige_get_num_threads
+#endif
+
 end module kriging_capi

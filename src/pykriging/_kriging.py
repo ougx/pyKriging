@@ -123,10 +123,54 @@ _krige_get_nsim    = _cfun("krige_get_nsim",    [ctypes.c_int64, _ptr_int])
 _krige_get_estimate= _cfun("krige_get_estimate",[ctypes.c_int64, _c_int, _c_int, _ptr_dbl])
 _krige_get_variance= _cfun("krige_get_variance",[ctypes.c_int64, _c_int, _ptr_dbl])
 
+_krige_get_max_threads = _cfun("krige_get_max_threads", [_ptr_int])
+_krige_get_num_threads = _cfun("krige_get_num_threads", [_ptr_int])
 
 # ---------------------------------------------------------------------------
 # Helper utilities
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# OpenMP diagnostics
+# ---------------------------------------------------------------------------
+
+def omp_info() -> dict:
+    """
+    Return a dict with OpenMP thread counts as seen by the Fortran runtime.
+
+    Keys
+    ----
+    max_threads : int
+        Value of omp_get_max_threads() — the number of threads that will be
+        used in the next parallel region (respects OMP_NUM_THREADS and any
+        omp_set_num_threads() calls).  Returns 1 when OpenMP is not compiled in.
+    num_threads : int
+        Value of omp_get_num_threads() measured inside an actual parallel
+        region — the number of threads that are *actually* running.
+        Returns 1 when OpenMP is not compiled in.
+    openmp : bool
+        True when the library was compiled with OpenMP support.
+
+    Example
+    -------
+    >>> import os; os.environ["OMP_NUM_THREADS"] = "4"
+    >>> from _kriging import omp_info
+    >>> omp_info()
+    {'max_threads': 4, 'num_threads': 4, 'openmp': True}
+    """
+    max_t = ctypes.c_int(0)
+    num_t = ctypes.c_int(0)
+    _krige_get_max_threads(ctypes.byref(max_t))
+    _krige_get_num_threads(ctypes.byref(num_t))
+    return {
+        "max_threads": max_t.value,
+        "num_threads": num_t.value,
+        "openmp": max_t.value > 1 or num_t.value > 1,
+    }
+
+def get_omp_info():
+    omp = omp_info()
+    print(f"OpenMP max_threads={omp['max_threads']}  actual threads={omp['num_threads']}  OpenMP {'On' if omp['openmp'] else 'Off'}")
 
 def _farray(a, dtype=np.float64):
     """Return a Fortran-contiguous array of the given dtype."""
@@ -297,6 +341,7 @@ class Kriging:
         self.nvar   = nvar
         self.ndrift = ndrift
         self.nsim   = nsim
+        self.verbose = verbose
 
     # ------------------------------------------------------------------
     def set_obs(
@@ -636,6 +681,8 @@ class Kriging:
         Run the kriging or SGSIM loop over all blocks.
         Calls prepare(), then the parallel block loop internally.
         """
+        if self.verbose:
+            get_omp_info()
         _krige_solve(_h(self._handle))
 
     # ------------------------------------------------------------------
