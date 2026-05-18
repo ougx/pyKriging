@@ -301,9 +301,16 @@ module kriging
     class(t_kriging)  :: self  ! TODO: check ivar and jvar
     character(*), intent(in)      :: spec
     integer     , intent(in)      :: ivar, jvar
+    errmsg = "t_kriging%set_vgm: "
     ! spec is a string of the form: vtype, nugget, sill, a_major, a_minor1, a_minor2, azimuth, dip, plunge
-    call self%vgm(jvar, ivar)%add(spec=spec)
-    if (jvar/=ivar) call self%vgm(ivar, jvar)%add(spec=spec)
+    if (jvar==ivar) then
+      call self%vgm(jvar, ivar)%add(spec=spec)
+    else if (jvar>ivar) then
+      call self%vgm(jvar, ivar)%add(spec=spec)
+      call self%vgm(ivar, jvar)%add(spec=spec)
+    else
+      error stop trim(errmsg)//'jvar must be >= ivar to set the upper triangle of the variogram matrix'
+    end if
   end subroutine set_vgm
 
 
