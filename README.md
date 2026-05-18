@@ -51,7 +51,7 @@ call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat"
 python build_lib.py --compiler ifx
 ```
 
-The script compiles all Fortran sources in `fortran/` in dependency order and
+The script compiles all Fortran sources in `src/libkriging/` in dependency order and
 places the resulting `libkriging.so` (or `kriging.dll`) inside `src/pykriging/`.
 
 ### 3 — Install the Python package
