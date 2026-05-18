@@ -1,4 +1,5 @@
-
+module progress_bar
+contains
 subroutine progress(r)
   implicit none
   real           :: r
@@ -17,3 +18,4 @@ subroutine progress(r)
 #endif
   return
 end subroutine progress
+end module progress_bar

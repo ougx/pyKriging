@@ -3,7 +3,8 @@ module kriging
   use iso_fortran_env, only: input_unit, error_unit, output_unit
 
   use common
-  use utils, only: set_seq, r8vec_normal_01, yesno
+  use utils, only: set_seq, r8vec_normal_01, yesno, random_seed_initialize
+  use progress_bar, only: progress
   use rotation
   use variogram
   use kdtree2_module
@@ -34,7 +35,7 @@ module kriging
     integer, allocatable  :: iblockpnt(:)  ! starting index of nodes for each block  [n]
     real   , allocatable  :: rangescale(:) ! scaler of variogram range; used to account for data sparsity
     real   , allocatable  :: localnugget(:)! additional nugget at each block; account for spatial data uncertainty
-    real   , allocatable  :: sample(:,:)   ! iid sample for simulation
+    real   , allocatable  :: sample(:,:)   ! i.i.d. N(0,1) sample for simulation
   end type t_blockgrid
 
   type, extends(t_data) :: t_obsgrid
@@ -90,6 +91,7 @@ module kriging
     procedure             :: write_weight
     procedure             :: read_weight
     procedure             :: finalize
+    procedure             :: print_system
   end type
 
   ! ============== for parallel kriging ================
@@ -115,10 +117,10 @@ module kriging
 
   subroutine initialize(self, ndim, nvar, ndrift, unbias, nsim, anisotropic_search,  &
                         weight_correction, use_old_weight, store_weight, cross_validation, &
-                        write_mat, verbose, weight_file, bounds, sk_mean)
+                        write_mat, verbose, weight_file, bounds, sk_mean, seed)
     class(t_kriging)      :: self
     integer, intent(in), optional   :: ndim           ! number of dimensions; must be defined
-    integer, intent(in), optional   :: nvar, ndrift, unbias, nsim
+    integer, intent(in), optional   :: nvar, ndrift, unbias, nsim, seed
     real,    intent(in), optional   :: bounds(2)
     real,    intent(in), optional   :: sk_mean
     logical, intent(in), optional   :: anisotropic_search, weight_correction, use_old_weight, &
@@ -140,6 +142,7 @@ module kriging
     if (present(sk_mean))            self%sk_mean            = sk_mean
     if (present(cross_validation))   self%cross_validation   = cross_validation
     if (present(verbose))            self%verbose            = verbose
+    if (present(seed   ))            call random_seed_initialize(seed)
     allocate(self%obs(nvar))
     allocate(self%grid)
     allocate(self%block)
@@ -360,7 +363,7 @@ module kriging
     real   , intent(in), optional :: sample(:,:)       ! sample from standard normal distribution
     integer, intent(in), optional :: randpath(:)       ! random path of each block if nsim>0 [n]; if not sepcified, it will be generated.
     ! local
-    real   , allocatable          :: temp(:,:)
+    real   , allocatable          :: temp(:,:), samp(:)
     integer                       :: iblock, ifile, isim
     errmsg = "t_kriging%set_sim: "
 
@@ -383,8 +386,10 @@ module kriging
         if (present(sample)) then
           self%block%sample = sample
         else
+          allocate(samp(self%block%n))
           do isim=1, self%nsim
-            call r8vec_normal_01(self%block%n, self%block%sample(isim, :))
+            call r8vec_normal_01(self%block%n, samp)
+            self%block%sample(isim, :) = samp
           end do
           open(newunit=ifile, file='sgs_sample.dat', status='replace')
           write(ifile, '(A,x,2I10)') 'SGSIM_Sample', self%nsim, self%block%n    ! TODO
@@ -471,10 +476,10 @@ module kriging
       self%x = 0.0
       ! initialize values
       self%nnear(0) = 0 ! neighbor blocks
-      call set_seq(self%inear(1:krige%obs(1)%nmax, 0), krige%obs(1)%nmax)
+      call set_seq(self%inear(1:mmax, 0), mmax)
       do ivar = 1, krige%nvar
         self%nnear(ivar) = krige%obs(ivar)%nmax
-        call set_seq(self%inear(1:mmax, ivar), mmax)
+        self%inear(:, ivar) = self%inear(:, 0)
       end do
     end associate
   end subroutine initialize_kriging_ctx
@@ -497,6 +502,9 @@ module kriging
         if (self%vgm(jvar, ivar)%nstruct==0) error stop trim(errmsg)//'Variogram is not set.'
       end do
     end do
+    If (self%nsim>0 .and. size(self%obs(1)%coord, 2) == self%obs(1)%n) then
+      error stop trim(errmsg)//'set_sim() needs to be called before solve().'
+    end if
 
     associate(npp=>self%nppmax, matsize=>self%matsize_max, ifile=>self%ifile)
       npp = 0
@@ -607,6 +615,9 @@ module kriging
       nnear  =>ctx%nnear(ivar), &   ! obs
       dist   =>ctx%sqdist(:,ivar), &
       maxdist=>self%obs(ivar)%maxdist, &
+      inearb =>ctx%inear(:,0), &
+      nnearb =>ctx%nnear(0), &
+      distb =>ctx%sqdist(:,0), &
       rotmat =>self%obs(ivar)%rotmat)
       !
 
@@ -617,8 +628,7 @@ module kriging
       end if
 
       if (nsim>0 .and. ivar==1) then
-        associate(inearb =>ctx%inear(:,0), nnearb =>ctx%nnear(0), distb =>ctx%sqdist(:,0))
-        if (nmax<nobs+iblock) then
+        if (nmax<nobs+iblock-1) then
           call kdtree2_n_nearest_maxidx(self%obs(ivar)%tree, newloc(:,1), nmax, results, nobs+iblock-1)
           allocate(is_obs, source=results%idx<=nobs)
           nnear            = count(is_obs)
@@ -630,11 +640,11 @@ module kriging
         else
           ! no search
           nnear  = nobs
-          nnearb = iblock
+          nnearb = iblock - 1
           ! inear no need to touch until search is needed
           dist(1:nnear) = rotated_dists(rotmat, ndim, newloc(:,1), obsloc(:,1:nnear))
+          distb(1:nnearb)  = rotated_dists(rotmat, ndim, newloc(:,1), self%block%coord(:,1:nnearb))
         end if
-        end associate
       else
         if (nmax<nobs) then
           call kdtree2_n_nearest       (self%obs(ivar)%tree, newloc(:,1), nmax, results)
@@ -668,6 +678,7 @@ module kriging
         end if
       end do
       nnear = k
+      ! print "(*(I7))", ctx%iblock, nnearb, nnear, inearb(:nnearb)+self%obs(1)%n, inear(:nnear)
     end associate
   end subroutine search_neighbors
 
@@ -701,8 +712,8 @@ module kriging
             tmp = 0
             k1 = self%block%iblockpnt(ctx%iblock)-1
             do k = 1, self%block%nblockpnt(ctx%iblock)
-              lag(1:ndim) = obs1%coord(:,inear(i)) - self%grid%coord(:, k1+k)
-              tmp = tmp + vgm%cov_lag(lag/rs) * self%grid%weight(k1+k)
+              lag(1:ndim) = (obs1%coord(:,inear(i)) - self%grid%coord(:, k1+k))/rs
+              tmp = tmp + vgm%cov_lag(lag) * self%grid%weight(k1+k)
             end do
             ctx%rhsB(1, ir0+i) = tmp
           end do
@@ -723,8 +734,8 @@ module kriging
               istart = 1
             end if
             do j = istart, nnear2
-              lag(1:ndim) = obs1%coord(:,inear(i)) - obs2%coord(:,inear2(j))
-              ctx%matA(ic0+j, ir0+i) = vgm%cov_lag(lag/rs)
+              lag(1:ndim) = (obs1%coord(:,inear(i)) - obs2%coord(:,inear2(j)))/rs
+              ctx%matA(ic0+j, ir0+i) = vgm%cov_lag(lag)
             end do
           end do
         end associate
@@ -743,11 +754,9 @@ module kriging
     errmsg = "t_kriging%assemble_linear_system: "
     ! search for neighbor
     associate(nvar=>self%nvar, dist=>ctx%sqdist, npp=>ctx%npp)
-      npp = 0
       ! exact-match detection
       do ivar = 1, nvar
         call self%search_neighbors(ivar, ctx)
-        npp = npp + ctx%nnear(ivar)
         if (ivar==1 .and. minval(dist(1:ctx%nnear(ivar),ivar))<=EPSLON) then
           npp = 1    ! signal exact match
           ctx%x=0.0
@@ -765,6 +774,7 @@ module kriging
           return
         end if
       end do
+      npp = sum(ctx%nnear)
 
       ! check if enough neighbors
       if (ctx%nnear(0) + ctx%nnear(1) == 0) then
@@ -843,17 +853,10 @@ module kriging
       unbias=>self%unbias, &
       ndrift=>self%ndrift)
 
-      call kriging_solve( &
-        npp, unbias+ndrift, &
-        matA(1:npp,1:npp), &
-        matA(1:npp,npp+1:matsize), &
-        rhsB(1,1:npp), &
-        rhsB(1,npp+1:matsize), &
-        x(1,1:npp), x(1,npp+1:matsize), &
-        info)
+      call kriging_solve( npp, unbias+ndrift, 1, matA, rhsB, x, info)
 
       if (info /= 0) then
-        call gaussian_elimination(matsize, matA, rhsB(1,:), x(1,:), info)
+        call gaussian_elimination(npp, unbias+ndrift, 1, matA, rhsB, x, info)
       end if
 
       if (info /= 0) then
@@ -959,6 +962,7 @@ module kriging
       end if
       where(val<self%bounds(1)) val = self%bounds(1)
       where(val>self%bounds(2)) val = self%bounds(2)
+      ! print "(*(I7))", ctx%iblock, nnear, inear(:nnear(0),0)+self%obs(1)%n, (inear(:nnear(ivar),ivar), ivar=1, self%nvar)
     end associate
   end subroutine estimate_block
 
@@ -972,7 +976,7 @@ module kriging
     print "(A   )", "==================== Configuration ===================="
     print "(A,A)",  ' Version                : ', version
     print "(A,I0)", " Dimension              : ", self%ndim
-    print "(A,I0)", " Number of Observations : ", self%nvar
+    print "(A,I0)", " Number of Variables    : ", self%nvar
     print "(A,I0)", " Number of Simulations  : ", self%nsim
     print "(A,I0)", " Number of Drifts       : ", self%ndrift
     print "(A,I0)", " Number of Blocks       : ", self%block%n
@@ -990,7 +994,7 @@ module kriging
     print "(A,G0)", " Upper Bound            : ", self%bounds(2)
 
     do ivar = 1, self%nvar
-      print "(A,I0,A)", " Observation ", ivar, ": "
+      print "(A,I0,A)", " Variable ", ivar, ": "
       print "(A,I0)"  , "   Number of data       : ", self%obs(ivar)%n
       print "(A,I0)"  , "   Maximum neighbors    : ", self%obs(ivar)%nmax
       print "(A,G0)"  , "   Maxdist              : ", sqrt(self%obs(ivar)%maxdist)
@@ -1001,11 +1005,10 @@ module kriging
     do ivar = 1, self%nvar
       do jvar = 1, self%nvar
         if (ivar == jvar) then
-          print "(A,I0,A,I0)", "   Model for Variable", ivar
+          print "(A,I0,A,I0,A)", "   Model for Variable ", ivar, self%vgm(jvar, ivar)%tostr()
         else
-          print "(A,I0,A,I0)", "   Model between Variable", ivar, " and ", jvar
+          print "(A,I0,A,I0,A)", "   Model between Variable ", ivar, " and ", jvar, self%vgm(jvar, ivar)%tostr()
         end if
-        print "(4x,A)", self%vgm(jvar, ivar)%tostr()
       end do
     end do
     print "(A   )", "================== End Configuration =================="
@@ -1016,7 +1019,7 @@ module kriging
     class(t_kriging_ctx)     :: self
     class(t_kriging)         :: krige
 
-    integer                  :: ivar, mmax, ifile, ii, k1
+    integer                  :: ivar, ifile, ii, k1
     integer, allocatable     :: idx(:)
     real   , allocatable     :: v(:)           ! store observation values
     real   , allocatable     :: w(:)           ! store weights
@@ -1024,7 +1027,6 @@ module kriging
     character(len=20) :: sig, idxstr
     character(len=6 ) :: cname(3)=['x_orig', 'y_orig', 'z_orig']
 
-    mmax = maxval(krige%obs%nmax)
     associate(&
       ndim      => krige%ndim, &
       ib        => self%iblock, &
@@ -1064,14 +1066,14 @@ module kriging
       end do
       close(ifile)
       if (npp<=1) return
-      open(newunit=ifile, file='matA_'//trim(idxstr)//'.dat', status='replace')
+      open(newunit=ifile, file='matA_'//trim(idxstr)//'.csv', status='replace')
       do ii =1, matsize
-        write(ifile, "(*(ES15.7))") matA(:matsize, ii)
+        write(ifile, "(*(ES0.7,:,','))") matA(:matsize, ii)
       end do
       close(ifile)
-      open(newunit=ifile, file='rhsB_'//trim(idxstr)//'.dat', status='replace')
+      open(newunit=ifile, file='rhsB_'//trim(idxstr)//'.csv', status='replace')
       do ii =1, matsize
-        write(ifile, "(*(ES15.7))") rhsB(:,ii)
+        write(ifile, "(*(ES0.7,:,','))") rhsB(:,ii)
       end do
       close(ifile)
     end associate

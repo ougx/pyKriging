@@ -49,7 +49,6 @@ implicit none
 real                    :: rotmat(3,3)
 real, intent(in)        :: ang1,ang2,ang3,anis1,anis2
 real                    :: alpha, sina, cosa, tmp(3,3)
-logical                 :: scaling = .false.
 
 ! Initialize as identity with anisotropic scaling
   rotmat = 0.0
@@ -134,8 +133,6 @@ real                    :: coord1(ndim, npnt)
 real                    :: coord2(ndim, npnt)
 real, optional          :: origin(ndim)
 ! local
-integer                 :: idim, j
-real                    :: tmp(ndim, npnt)
 
 call sub_rotate(rotmat, ndim, npnt, coord1, coord2, origin)
 end function
@@ -227,7 +224,6 @@ real, intent(in)             :: x(:, :)
 real, intent(out)            :: res(ndim, size(x, 2))
 
 ! local
-integer                      :: i
 
 select case (ndim)
 case (1)

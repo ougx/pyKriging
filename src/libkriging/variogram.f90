@@ -394,9 +394,9 @@ contains
     character(:), allocatable         :: s
     character(256) :: buf
     if (allocated(this%shape)) then
-      write(buf,'(A3,"  sill=",G12.6, &
+      write(buf,'(A3,"  sill=",G13.6, &
                &"  az=",F7.2,"  dip=",F7.2,"  pl=",F7.2, &
-               &"  a=",3(G12.6,1X))') &
+               &"  a=",3(G13.6,1X))') &
         this%shape%vtype, this%sill,                          &
         this%aniso%azimuth, this%aniso%dip, this%aniso%plunge, &
         this%aniso%a_major, this%aniso%a_minor1, this%aniso%a_minor2
@@ -529,10 +529,10 @@ contains
     character(:), allocatable      :: s
     character(64) :: buf
     integer :: iv
-    write(buf,'("Number of structures = ",I0)') this%nstruct
+    write(buf,'("  Number of structures = ",I0)') this%nstruct
     s = trim(buf)
     do iv = 1, this%nstruct
-      s = s // new_line('a') // '  ' // this%structs(iv)%tostr()
+      s = s // new_line('a') // '    ' // this%structs(iv)%tostr()
     end do
   end function struct_tostr
 
@@ -659,7 +659,7 @@ contains
     class(variog), intent(in)  :: this
     character(:), allocatable  :: s
     character(64) :: buf
-    write(buf,'(A3,"  nugget=",G12.6)') this%vtype, this%nugget
+    write(buf,'(A3,"  nugget=",G13.6)') this%vtype, this%nugget
     s = trim(buf)
   end function tostr
 

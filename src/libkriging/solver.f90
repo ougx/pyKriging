@@ -163,151 +163,199 @@ contains
   !-----------------------------------------------------------------------
   ! Universal Kriging via Block-Cholesky / Schur Complement
   !
-  ! Solves:
-  !     [ K   F ] [ w ] = [ k ]
-  !     [ Fᵀ  0 ] [ λ ]   [ f ]
+  ! Solves q right-hand sides simultaneously:
+  !     [ K   F ] [ W ] = [ B ]
+  !     [ Fᵀ  0 ] [ Λ ]   [ G ]
   !
   ! where:
   !   K (n×n) : covariance matrix (SPD)
-  !   F (n×p) : drift/design matrix
-  !   k (n)   : covariance between data and estimation point
-  !   f (p)   : drift evaluated at estimation point
+  !   F (n×p) : drift/design matrix (p drift terms; p=1 for ordinary kriging)
+  !   B (n×q) : covariance vectors to q estimation points
+  !   G (p×q) : drift evaluated at q estimation points
+  !   q       : number of RHS columns (usually 1)
   !
   ! Outputs:
-  !   w (n)   : kriging weights
-  !   λ (p)   : Lagrange multipliers
+  !   W (n×q) : kriging weights for each of the q RHS columns
+  !   Λ (p×q) : Lagrange multipliers for each of the q RHS columns
   !
-  ! Method:
-  !   1. Factor K = L Lᵀ (Cholesky)
-  !   2. Solve Y = K⁻¹ F
-  !   3. Solve y = K⁻¹ k
-  !   4. Form Schur complement S = Fᵀ Y
-  !   5. Solve S λ = Fᵀ y − f
-  !   6. Compute w = y − Y λ
+  ! Method (same Schur complement for all q simultaneously):
+  !   1. Factor K = L Lᵀ  (Cholesky, once)
+  !   2. Solve Y = K⁻¹ F               (n×p, once)
+  !   3. Solve Z = K⁻¹ B               (n×q)
+  !   4. Form Schur complement S = Fᵀ Y (p×p, once)
+  !   5. Solve S Λ = Fᵀ Z − G          (p×q)
+  !   6. Compute W = Z − Y Λ            (n×q)
   !
   !-----------------------------------------------------------------------
-  subroutine kriging_solve(n, p, cov_mat, drift_mat, cov_vec, drift_vec, &
-                         weights, lambda, info)
+  !
+  !-----------------------------------------------------------------------
+  ! Universal Kriging via Block-Cholesky / Schur Complement
+  !
+  ! Solves q right-hand sides using the full augmented system arrays
+  ! directly — no temporary sub-array copies at the call site.
+  !
+  ! System layout in the passed arrays:
+  !
+  !   matA  (n+p, n+p):    [ K   F  ]    K = covariance (SPD, n×n)
+  !                        [ Fᵀ  0  ]    F = drift/design matrix (n×p)
+  !
+  !   rhsB  (q, n+p):      [ B  | G ]    B = covariance RHS (q×n)
+  !                                       G = drift RHS      (q×p)
+  !
+  !   x     (q, n+p):  solution, same layout as rhsB
+  !                        [ W  | Λ ]    W = kriging weights (q×n)
+  !                                       Λ = Lagrange multipliers (q×p)
+  !
+  ! Arguments
+  !   n     : data points in the neighbourhood (K block size)
+  !   p     : drift/constraint terms (0=simple, 1=ordinary, >1=universal)
+  !   q     : number of RHS columns (usually 1)
+  !   matA  : (n+p) × (n+p) augmented matrix (column-major, Fortran order)
+  !   rhsB  : q × (n+p) augmented RHS  (first index = realisation/column)
+  !   x     : q × (n+p) solution        (same index convention as rhsB)
+  !   info  : 0 on success; non-zero indicates which step failed
+  !
+  ! Note on memory layout
+  !   Fortran stores arrays column-major.  matA(1:n, 1:n) is a contiguous
+  !   leading sub-matrix and can be passed to LAPACK directly.
+  !   rhsB(i, 1:n) is a strided row, so we copy it into a local (n,q)
+  !   column-major array for the LAPACK solve — one unavoidable copy.
+  !-----------------------------------------------------------------------
+  subroutine kriging_solve(n, p, q, matA, rhsB, x, info)
 
     implicit none
 
-    integer, intent(in) :: n, p
-
-    real   , intent(in)  :: cov_mat(n,n)
-    real   , intent(in)  :: drift_mat(n,p)
-    real   , intent(in)  :: cov_vec(n)
-    real   , intent(in)  :: drift_vec(p)
-
-    real   , intent(out) :: weights(n)
-    real   , intent(out) :: lambda(p)
+    integer, intent(in)  :: n, p, q
+    real,    intent(in)  :: matA(n+p, n+p)
+    real,    intent(in)  :: rhsB(q, n+p)
+    real,    intent(out) :: x(q, n+p)
     integer, intent(out) :: info
 
-    ! -------- local ----------
-    real   :: L(n,n)
-    real   :: kinv_cov_vec(n)
-    real   :: kinv_drift(n,p)
-    real   :: schur_mat(p,p)
-    real   :: rhs(p)
+    ! -------- locals ----------
+    real    :: L(n,n)
+    real    :: kinv_drift(n,p)    ! K⁻¹ F  (n×p, column-major for LAPACK)
+    real    :: kinv_rhs(n,q)      ! K⁻¹ B  (n×q, column-major for LAPACK)
+    real    :: schur_mat(p,p)     ! Fᵀ K⁻¹ F  (p×p)
+    real    :: rhs_small(p,q)     ! Schur RHS  (p×q)
+    integer :: i
 
     !--------------------------------------------------
-    ! Cholesky factorization
-    L = cov_mat
+    ! Cholesky factorization  K = L Lᵀ
+    ! matA(1:n, 1:n) is contiguous — no copy needed.
+    L = matA(1:n, 1:n)
     call spotrf(uplo, n, L, n, info)
-    if (info /= 0) return ! stop "Cholesky factoring failed"
+    if (info /= 0) return
 
     !--------------------------------------------------
-    ! SIMPLE KRIGING
-    if (p==0) then
-      kinv_cov_vec = cov_vec
-      call spotrs(uplo, n, 1, L, n, kinv_cov_vec, n, info)
-      if (info /= 0) return ! stop "Simple kriging solve failed"
-      weights = kinv_cov_vec
-      lambda = 0.0
+    ! SIMPLE KRIGING  (p = 0)
+    if (p == 0) then
+      ! Transpose rhsB rows into column-major kinv_rhs for LAPACK
+      do i = 1, q
+        kinv_rhs(:, i) = rhsB(i, 1:n)
+      end do
+      call spotrs(uplo, n, q, L, n, kinv_rhs, n, info)
+      if (info /= 0) return
+      do i = 1, q
+        x(i, 1:n) = kinv_rhs(:, i)
+      end do
       return
     end if
 
     !--------------------------------------------------
-    ! UNIVERSAL KRIGING
+    ! UNIVERSAL / ORDINARY KRIGING
 
-    ! kinv_drift = K⁻¹ F
-    kinv_drift = drift_mat
+    ! kinv_drift = K⁻¹ F  (n×p, shared across all q RHS)
+    ! matA(1:n, n+1:n+p) is a contiguous column slice — no copy needed.
+    kinv_drift = matA(1:n, n+1:n+p)
     call spotrs(uplo, n, p, L, n, kinv_drift, n, info)
-    if (info /= 0) return ! stop "Drift solve failed"
+    if (info /= 0) return
 
-    ! kinv_cov_vec = K⁻¹ k
-    kinv_cov_vec = cov_vec
-    call spotrs(uplo, n, 1, L, n, kinv_cov_vec, n, info)
-    if (info /= 0) return ! stop "rhs solve failed"
+    ! kinv_rhs = K⁻¹ B  (n×q)
+    ! rhsB rows are strided — must transpose into column-major kinv_rhs.
+    do i = 1, q
+      kinv_rhs(:, i) = rhsB(i, 1:n)
+    end do
+    call spotrs(uplo, n, q, L, n, kinv_rhs, n, info)
+    if (info /= 0) return
 
-    ! Schur complement: Fᵀ K⁻¹ F
-    schur_mat = matmul(transpose(drift_mat), kinv_drift)
+    ! Schur complement  S = Fᵀ K⁻¹ F  (p×p, shared)
+    schur_mat = matmul(transpose(matA(1:n, n+1:n+p)), kinv_drift)
 
-    ! rhs: Fᵀ K⁻¹ k − f
-    rhs = matmul(transpose(drift_mat), kinv_cov_vec) - drift_vec
+    ! Schur RHS:  Fᵀ K⁻¹ B − G  (p×q)
+    ! G = rhsB(1:q, n+1:n+p) — strided rows, extract column-by-column.
+    rhs_small = matmul(transpose(matA(1:n, n+1:n+p)), kinv_rhs)
+    do i = 1, q
+      rhs_small(:, i) = rhs_small(:, i) - rhsB(i, n+1:n+p)
+    end do
 
-    ! solve small system
-    call sposv(uplo, p, 1, schur_mat, p, rhs, p, info)
-    if (info /= 0) return ! stop "small system solve failed"
+    ! Solve  S Λ = rhs_small  (p×q small system)
+    call sposv(uplo, p, q, schur_mat, p, rhs_small, p, info)
+    if (info /= 0) return
 
-    lambda = rhs
-
-    ! final weights
-    weights = kinv_cov_vec - matmul(kinv_drift, lambda)
+    ! Write weights and multipliers back into x
+    do i = 1, q
+      x(i, 1:n)     = kinv_rhs(:, i) - matmul(kinv_drift, rhs_small(:, i))
+      x(i, n+1:n+p) = rhs_small(:, i)
+    end do
   end subroutine
 
 
-  subroutine gaussian_elimination(n, matA, rhsB, x, info)
+  subroutine gaussian_elimination(n, p, q, matA, rhsB, x, info)
+    ! Fallback full-system solver with partial pivoting.
+    ! Same array layout as kriging_solve: matA(n+p,n+p), rhsB(q,n+p), x(q,n+p).
     implicit none
 
-    integer, intent(in) :: n
-    real, intent(in) :: matA(n,n)
-    real, intent(in) :: rhsB(n)
-
-    real, intent(out) :: x(n)
+    integer, intent(in)  :: n, p, q
+    real,    intent(in)  :: matA(n+p, n+p)
+    real,    intent(in)  :: rhsB(q, n+p)
+    real,    intent(out) :: x(q, n+p)
     integer, intent(out) :: info
 
-    ! locals
-    real :: Acopy(n,n)
-    integer :: k, piv, i
-    real :: y(n)
-    real :: rhs(n)
-    real :: maxv, factor, tmp
+    integer :: m
+    real, allocatable :: A(:,:), R(:,:)
+    integer :: k, piv, i, j
+    real    :: maxv, factor
 
+    m    = n + p
     info = 0
-    Acopy = matA
-    rhs = rhsB
+    allocate(A(m,m), R(m,q))
 
-    ! forward elimination
-    do k = 1, n-1
-      piv = k
-      maxv = abs(Acopy(k,k))
-      do i = k+1, n
-        if (abs(Acopy(i,k)) > maxv) then
-          maxv = abs(Acopy(i,k))
-          piv = i
+    ! Copy into column-major locals for in-place elimination
+    A = matA
+    do i = 1, q
+      R(:, i) = rhsB(i, :)
+    end do
+
+    ! Forward elimination with partial pivoting
+    do k = 1, m-1
+      piv  = k
+      maxv = abs(A(k,k))
+      do i = k+1, m
+        if (abs(A(i,k)) > maxv) then
+          maxv = abs(A(i,k)); piv = i
         end if
       end do
       if (piv /= k) then
-        Acopy([k,piv], :) = Acopy([piv,k], :)
-        rhs([k,piv]) = rhs([piv,k])
+        A([k,piv], :) = A([piv,k], :)
+        R([k,piv], :) = R([piv,k], :)
       end if
-      if (abs(Acopy(k,k)) < 1.0e-10) then
-        ! print *, 'Matrix is singular or nearly singular at pivot ', k
-        info = k
-        return
+      if (abs(A(k,k)) < 1.0e-10) then
+        info = k; return
       end if
-      do i = k+1, n
-        factor = Acopy(i,k) / Acopy(k,k)
-        Acopy(i,k:n) = Acopy(i,k:n) - factor * Acopy(k,k:n)
-        rhs(i) = rhs(i) - factor * rhs(k)
+      do i = k+1, m
+        factor    = A(i,k) / A(k,k)
+        A(i,k:m)  = A(i,k:m) - factor * A(k,k:m)
+        R(i,:)    = R(i,:)   - factor * R(k,:)
       end do
     end do
 
-    ! back substitution
-    do i = n, 1, -1
-      tmp = rhs(i)
-      if (i < n) tmp = tmp - sum(Acopy(i, i+1:n) * x(i+1:n))
-      x(i) = tmp / Acopy(i,i)
+    ! Back substitution for all q columns
+    do j = 1, q
+      do i = m, 1, -1
+        if (i < m) R(i,j) = R(i,j) - sum(A(i,i+1:m) * R(i+1:m,j))
+        R(i,j) = R(i,j) / A(i,i)
+      end do
+      x(j, :) = R(:, j)
     end do
   end subroutine
 end module
