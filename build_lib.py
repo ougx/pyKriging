@@ -70,26 +70,26 @@ def _intel_flags(opt_win, opt_linux, debug_win, debug_linux, shared_win, shared_
 
 FLAGS = {
     "gfortran": {
-        "release": ["-O2", "-fPIC", "-fdefault-real-8", "-fopenmp", "-cpp", "-fbacktrace", "-ffree-line-length-none"],
-        "debug": ["-O0", "-g", "-fPIC", "-fdefault-real-8", "-fopenmp", "-Wall", "-fcheck=all", "-fbacktrace", "-cpp", "-ffree-line-length-none"],
-        "shared": ["-shared"],
+        "release": ["-O2", "-fdefault-real-8", "-fopenmp", "-cpp", "-fbacktrace", "-ffree-line-length-none"],
+        "debug": ["-O0", "-g", "-fdefault-real-8", "-fopenmp", "-Wall", "-fcheck=all", "-fbacktrace", "-cpp", "-ffree-line-length-none"],
+        "shared": ["-shared", "-fPIC"],
         "implib": [],
     },
     "ifx": _intel_flags(
-        opt_win   = ["/O2", "/real-size:64", "/Qopenmp", "/libs:dll", "/heap-arrays:0", "/traceback", "/fpp"],
+        opt_win   = ["/O2", "/real-size:64", "/Qopenmp", "/heap-arrays:0", "/traceback", "/fpp"],
         opt_linux = ["-O2", "-real-size:64", "-qopenmp", "-traceback", "-fpp"],
-        debug_win = ["/Od", "/debug:full", "/real-size:64", "/Qopenmp", "/libs:dll", "/heap-arrays:0", "/traceback", "/warn:all", "/fpp", "/check:all"],
+        debug_win = ["/Od", "/debug:full", "/real-size:64", "/Qopenmp", "/heap-arrays:0", "/traceback", "/warn:all", "/fpp", "/check:all"],
         debug_linux=["-O0", "-g", "-real-size:64", "-qopenmp", "-traceback", "-fpp", "-warn all", "-check all"],
-        shared_win = ["/dll"],
+        shared_win = ["/dll", "/libs:dll"],
         shared_linux = ["-shared", "-fPIC"]
     ),
     "ifort": _intel_flags(
         # Classic ifort matches ifx flag syntax exactly on Windows/Linux
-        opt_win   = ["/O2", "/real-size:64", "/Qopenmp", "/libs:dll", "/heap-arrays:0", "/traceback", "/fpp"],
+        opt_win   = ["/O2", "/real-size:64", "/Qopenmp", "/heap-arrays:0", "/traceback", "/fpp"],
         opt_linux = ["-O2", "-real-size:64", "-qopenmp", "-traceback", "-fpp"],
-        debug_win = ["/Od", "/debug:full", "/real-size:64", "/Qopenmp", "/libs:dll", "/heap-arrays:0", "/traceback", "/warn:all", "/fpp", "/check:all"],
+        debug_win = ["/Od", "/debug:full", "/real-size:64", "/Qopenmp", "/heap-arrays:0", "/traceback", "/warn:all", "/fpp", "/check:all"],
         debug_linux=["-O0", "-g", "-real-size:64", "-qopenmp", "-traceback", "-fpp", "-warn all", "-check all"],
-        shared_win = ["/dll"],
+        shared_win = ["/dll", "/libs:dll"],
         shared_linux = ["-shared", "-fPIC"]
     ),
 }

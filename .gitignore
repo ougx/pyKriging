@@ -64,3 +64,5 @@ Thumbs.db
 *data_*.csv
 *matA_*.csv
 *rhsB_*.csv
+bin/sparks.exe
+bin/sparks.pdb
