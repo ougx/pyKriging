@@ -91,9 +91,10 @@ print(est.shape, var.shape)   # (25,) (25,)
 
 # --- Full class interface ---
 k = Kriging(ndim=2, nvar=1)
+k.set_vgm(ivar=1, jvar=1, spec="sph 0.0 1.0 1.0 0.8 0.8 0.0 0.0 0.0")
 k.set_obs(ivar=1, coord=obs_coord, value=obs_value, nmax=5)
-k.set_vgm(ivar=1, jvar=1, spec="sph 0.0 1.0 0.8 1.0 0.8 0.0 0.0 0.0")
 k.set_grid(coord=grid_coord)
+k.set_sim()
 k.set_search(ivar=1)
 k.solve()
 est, var = k.get_results()

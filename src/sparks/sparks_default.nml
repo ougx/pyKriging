@@ -1,0 +1,67 @@
+&input_output
+  obsfile1   = '',                    ! primary observation file: id, x(,y,z), value [, drifts]
+  obsfile2   = '',                    ! secondary (covariate) observation file: id, x(,y,z), value [, drifts]
+  gridfile   = '',                    ! grid/estimation point file: id, x(,y,z) [, drifts]
+  facfile    = '',                    ! kriging factor file (read or write weights for re-use)
+  blockfile  = '',                    ! block file: npoints, x(,y,z) [, drifts] per block
+  randpath   = '',                    ! file containing pre-generated simulation path indices
+  samfile    = '',                    ! file containing pre-generated standard-normal samples
+  rsfile     = '',                    ! file containing per-block range scale factors
+  lnfile     = ''                     ! file containing per-block local nugget
+  fomt       = '(10(G0.12,:x))',      ! Fortran write format for output values
+  outfile    = '~',                   ! output file; '~' prints to stdout
+/
+
+&dims
+  ndim       = 2,                     ! number of spatial dimensions (1, 2, or 3)
+  ndrift     = 0,                     ! number of drift functions (0 = no drift)
+  nobs1      = 0,                     ! number of primary observations (0 = count from obsfile1)
+  nobs2      = 0,                     ! number of covariate observations (0 = count from obsfile2)
+  ngrid      = 0,                     ! number of grid/estimation points (0 = count from gridfile)
+  nblock     = 0,                     ! number of blocks (0 = derived from ngrid and blocktype)
+  nsim       = 0,                     ! number of simulations (0 = kriging only)
+/
+
+&krige_opt
+  nmax1      = 200,                    ! maximum number of primary observations per neighbourhood
+  nmax2      = 200,                    ! maximum number of covariate observations per neighbourhood
+  unbias     = 0,                      ! 0 = simple kriging (SK), 1 = ordinary kriging (OK)
+  maxdist1   =  3.4028235E+38,         ! maximum search distance for primary obs (-1 = unlimited)
+  maxdist2   =  3.4028235E+38,         ! maximum search distance for covariate obs (-1 = unlimited)
+  sk_mean    = 0.0,                    ! mean for simple kriging
+  vmin       = -3.4028235E+38,         ! lower bound for simulated/estimated values
+  vmax       =  3.4028235E+38,         ! upper bound for simulated/estimated values
+  blocksize  = 0.0, 0.0, 0.0,          ! block dimensions for GQ discretisation (one value per dim)
+  block_type = 0,                      ! 0 = point kriging, 1 = block file, 2 = Gaussian quadrature
+  seed       = 0,                      ! random seed for path and sample generation (0 = system clock)
+/
+
+&variograms
+  nvgm1      = 1,                     ! number of structure for primary variogram
+  nvgm2      = 1,                     ! number of structure for covariate variogram
+  nvgmc      = 1,                     ! number of structure for cross-variogram between primary and covariate
+  vgm_spec1  = '',                    ! primary variogram: "vtype nugget sill range"
+  vgm_spec2  = '',                    ! covariate variogram (same format as vgm_spec1)
+  vgm_specc  = '',                    ! cross-variogram between primary and covariate (same format)
+/
+
+&anisotropy
+  ang1       = 0.0,                       ! azimuth angle of principal direction (degrees, clockwise from north)
+  ang2       = 0.0,                       ! dip angle of principal direction (degrees, positive downward)
+  ang3       = 0.0,                       ! plunge / third rotation angle (degrees)
+  anis1      = 1.0,                       ! anisotropy ratio in first minor direction (0 < anis1 <= 1)
+  anis2      = 1.0,                       ! anisotropy ratio in second minor direction (0 < anis2 <= 1)
+/
+
+&flags
+  correct_weight     = .false.,      ! remove negative weights and renormalise to sum to 1
+  writexy            = .false.,      ! include coordinates in output (id, x,y[,z], estimate, variance)
+  neglect_error      = .false.,      ! continue with NaN estimate when linear system fails (vs. abort)
+  writemat           = .false.,      ! write kriging matrix and RHS to files for debugging
+  showargs           = .false.,      ! print full configuration summary before solving
+  loocv              = .false.,      ! leave-one-out cross-validation mode (grid = observations)
+  anisotropic_search = .false.,      ! use rotated/scaled coordinates for neighbour search
+  verbose            = .false.,      ! print progress messages during solving
+  blockpntweight     = .false.,      ! read per-point weights from gridfile (vs. equal weights)
+  obserror           = .false.,      ! treat obs variance column as heteroscedastic error variance
+/
