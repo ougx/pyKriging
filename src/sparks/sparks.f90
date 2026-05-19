@@ -126,7 +126,7 @@ program sparks
     option_s("varioc", "vc", 4, "cross-variogram (primary x secondary). same format as vario1."), &
     option_s("bounds", "bd", 2, "lower and upper bounds for simulated/estimated values."), &
     option_s("blocksize", "bs", 1, "blocks dimensions for gaussian quadrature (block_type=-4)."), &
-    option_s("maxdist", "md", 2, "max search distance: two values for primary and covariate. anisotropic when anisosearch is on."), &
+    option_s("maxdist", "md", 2, "max search distance: two values for primary and covariate. "), &
     option_s("correct", "cw", 0, "remove negative weights and renormalise to sum to 1."), &
     option_s("anisosearch", "as", 0, "neighbour search in rotated/scaled (anisotropic) coordinates."), &
     option_s("obserror", "oe", 0, "observation error variance is present in the input file."), &
