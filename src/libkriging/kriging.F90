@@ -55,6 +55,7 @@ module kriging
     logical               :: cross_validation = .false.
     logical               :: write_mat = .false.
     logical               :: verbose = .false.
+    logical               :: neglect_error = .false.
     character(len=1024)   :: weight_file = ""
     integer               :: ifile  = 0           ! file unit for weight file
     integer               :: ndim   = 2
@@ -117,14 +118,14 @@ module kriging
 
   subroutine initialize(self, ndim, nvar, ndrift, unbias, nsim, anisotropic_search,  &
                         weight_correction, use_old_weight, store_weight, cross_validation, &
-                        write_mat, verbose, weight_file, bounds, sk_mean, seed)
+                        write_mat, neglect_error, verbose, weight_file, bounds, sk_mean, seed)
     class(t_kriging)      :: self
     integer, intent(in), optional   :: ndim           ! number of dimensions; must be defined
     integer, intent(in), optional   :: nvar, ndrift, unbias, nsim, seed
     real,    intent(in), optional   :: bounds(2)
     real,    intent(in), optional   :: sk_mean
     logical, intent(in), optional   :: anisotropic_search, weight_correction, use_old_weight, &
-                                       write_mat, store_weight, verbose, cross_validation
+                                       write_mat, store_weight, verbose, cross_validation, neglect_error
     character(len=*), intent(in), optional :: weight_file
     errmsg = "t_kriging%initialize: "
     if (present(ndim))               self%ndim               = ndim
@@ -142,6 +143,7 @@ module kriging
     if (present(sk_mean))            self%sk_mean            = sk_mean
     if (present(cross_validation))   self%cross_validation   = cross_validation
     if (present(verbose))            self%verbose            = verbose
+    if (present(neglect_error))      self%neglect_error      = neglect_error
     if (present(seed   )) then
       if (self%verbose .and. self%nsim>0) print "(A,I0)", "random seed is set to ", seed
       call random_seed_initialize(seed)
@@ -256,7 +258,7 @@ module kriging
           do iblock=1,self%block%n
             nn = nblockpnt(iblock)
             do idim=1,ndim
-              self%block%coord(idim, iblock) = sum(self%grid%coord(idim,igrid+1:igrid+nn)*self%grid%weight(igrid+1:igrid+nn))
+              self%block%coord(idim, iblock) = sum(self%grid%coord(idim,igrid+1:igrid+nn)*self%grid%weight(igrid+1:igrid+nn)) / sum(self%grid%weight(igrid+1:igrid+nn))
             end do
             igrid = igrid + nn
           end do  ! iblock
@@ -595,10 +597,14 @@ module kriging
       if (verbose) print *, "" ! start a new line below the progress bar
 #endif
       if (verbose) print*, "Kriging completed."
+      ! reorder estimated values
       if (self%nsim>0) then
-        allocate(temp, source=self%block%estimate)
+        allocate(temp(self%nsim+self%ndim, self%block%n))
+        temp(1:self%ndim,:) = self%block%coord
+        temp(self%ndim+1:,:) = self%block%estimate
         do ib = 1, self%block%n
-          self%block%estimate(:, self%block%order(ib)) = temp(:, ib)
+          self%block%coord   (:, self%block%order(ib)) = temp(1: self%ndim, ib)
+          self%block%estimate(:, self%block%order(ib)) = temp(self%ndim+1:, ib)
         end do
       end if
     end associate
@@ -877,7 +883,12 @@ module kriging
       if (info /= 0) then
         write(idxstr,'(i0)') iblock
         call ctx%write_matrix(self)
-        error stop trim(errmsg)//'Singluar matrix at block '//trim(idxstr)
+        if (self%neglect_error) then
+          ! set to nan
+          x = IEEE_VALUE(0.0, IEEE_QUIET_NAN)
+        else
+          error stop trim(errmsg)//'Singluar matrix at block '//trim(idxstr)
+        end if
       end if
 
       if (self%weight_correction) then
