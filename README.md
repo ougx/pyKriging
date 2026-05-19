@@ -120,7 +120,7 @@ drift      = np.array([[d1a,d1b], [d2a,d2b], ...])  # shape (nobs, ndrift)
 Variograms are described as a space-separated string:
 
 ```
-"vtype  nugget  sill  a_minor1  a_major  a_minor2  azimuth  dip  plunge"
+"vtype  nugget  sill  a_major  a_minor1  a_minor2  azimuth  dip  plunge"
 ```
 
 | Field | Description |
@@ -128,8 +128,8 @@ Variograms are described as a space-separated string:
 | `vtype` | Model type: `sph` `exp` `gau` `pow` `lin` `hol` `bsq` `cir` |
 | `nugget` | Nugget effect |
 | `sill` | Partial sill (variance contributed by this structure) |
+| `a_major` | Range along the major axis, [Y] |
 | `a_minor1` | Range along the minor horizontal axis |
-| `a_major` | Range along the major axis |
 | `a_minor2` | Range along the vertical axis (3D only) |
 | `azimuth` | Azimuth of major axis (degrees, clockwise from North) |
 | `dip` | Dip angle (degrees, positive downward) |
@@ -138,8 +138,8 @@ Variograms are described as a space-separated string:
 Call `set_vgm` multiple times to build a composite (nested) model:
 
 ```python
-k.set_vgm(1, 1, "sph 100.0 400.0 500 1000 500 0 0 0")   # structure 1
-k.set_vgm(1, 1, "exp   0.0 500.0 300  500 300 0 0 0")   # structure 2
+k.set_vgm(1, 1, "sph 100.0 400.0 1000 500 500 0 0 0")   # structure 1
+k.set_vgm(1, 1, "exp   0.0 500.0  500 300 300 0 0 0")   # structure 2
 ```
 
 ---
@@ -154,9 +154,9 @@ est, var = cokriging(
     obs_values=[value_primary, value_secondary],
     grid_coord=grid,
     variogram_specs={
-        (1, 1): "sph 0 1.0 500 1000 500 0 0 0",   # primary auto-variogram
-        (2, 2): "sph 0 1.0 500 1000 500 0 0 0",   # secondary auto-variogram
-        (1, 2): "sph 0 0.8 500 1000 500 0 0 0",   # cross-variogram (b12²≤b11·b22)
+        (1, 1): "sph 0 1.0 1000 500 500 0 0 0",   # primary auto-variogram
+        (2, 2): "sph 0 1.0 1000 500 500 0 0 0",   # secondary auto-variogram
+        (1, 2): "sph 0 0.8 1000 500 500 0 0 0",   # cross-variogram (b12²≤b11·b22)
     },
     nmax=20,
 )
