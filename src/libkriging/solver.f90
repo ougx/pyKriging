@@ -226,9 +226,9 @@ contains
     implicit none
 
     integer, intent(in)  :: n, p, q
-    real,    intent(in)  :: matA(n+p, n+p)
-    real,    intent(in)  :: rhsB(q, n+p)
-    real,    intent(out) :: x(q, n+p)
+    real,    intent(in)  :: matA(:, :)
+    real,    intent(in)  :: rhsB(:, :)
+    real,    intent(out) :: x(:, :)
     integer, intent(out) :: info
 
     ! -------- locals ----------
@@ -318,9 +318,9 @@ contains
     implicit none
 
     integer, intent(in)  :: n, p, q
-    real,    intent(in)  :: matA(n+p, n+p)
-    real,    intent(in)  :: rhsB(q, n+p)
-    real,    intent(out) :: x(q, n+p)
+    real,    intent(in)  :: matA(:, :)
+    real,    intent(in)  :: rhsB(:, :)
+    real,    intent(out) :: x(:, :)
     integer, intent(out) :: info
 
     integer :: m, lwork
@@ -333,11 +333,11 @@ contains
     allocate(Acopy(m,m), B(m,q), ipiv(m))
 
     ! SSYSV overwrites its matrix and RHS in place — copy both.
-    Acopy = matA
+    Acopy = matA(1:m,1:m)
 
     ! Transpose rhsB(q,m) -> B(m,q) for LAPACK column-major RHS.
     do i = 1, q
-      B(:, i) = rhsB(i, :)
+      B(:, i) = rhsB(i, 1:m)
     end do
 
     ! Workspace query.
@@ -354,7 +354,7 @@ contains
     ! Transpose solution B(m,q) -> x(q,m).
     if (info == 0) then
       do i = 1, q
-        x(i, :) = B(:, i)
+        x(i, 1:m) = B(:, i)
       end do
     end if
   end subroutine ssysv_fallback
@@ -366,9 +366,9 @@ contains
     implicit none
 
     integer, intent(in)  :: n, p, q
-    real,    intent(in)  :: matA(n+p, n+p)
-    real,    intent(in)  :: rhsB(q, n+p)
-    real,    intent(out) :: x(q, n+p)
+    real,    intent(in)  :: matA(:, :)
+    real,    intent(in)  :: rhsB(:, :)
+    real,    intent(out) :: x(:, :)
     integer, intent(out) :: info
 
     integer :: m
@@ -381,9 +381,9 @@ contains
     allocate(A(m,m), R(m,q))
 
     ! Copy into column-major locals for in-place elimination
-    A = matA
+    A = matA(1:m, 1:m)
     do i = 1, q
-      R(:, i) = rhsB(i, :)
+      R(:, i) = rhsB(i, 1:m)
     end do
 
     ! Forward elimination with partial pivoting

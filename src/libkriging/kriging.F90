@@ -1449,7 +1449,7 @@ contains
 
       !-- Both solvers failed
       if (info /= 0) then
-          call ctx%write_matrix(self)
+        call ctx%write_matrix(self)
         if (self%neglect_error) then
           x = IEEE_VALUE(0.0, IEEE_QUIET_NAN)
         else
@@ -1708,7 +1708,7 @@ contains
         w  = weight(1, k1+1:k1+nnear(ivar))
         k1 = k1 + nnear(ivar)
         if (ivar == 0) then
-          sig = "grid"
+          sig = "GRID"
           idx = krige%block%order(inear(1:nnear(0), 0))
           xyz = krige%block%coord(1:ndim, inear(1:nnear(0), 0))
           v   = krige%block%estimate(1, inear(1:nnear(0), 0))
