@@ -208,37 +208,12 @@ contains
   !   and the full transform is mat = diag(1/a) * R so that:
   !     h_iso = || mat * lag ||
   subroutine build_aniso_mat(this)
+    use rotation, only: calc_rotmat
     class(vgm_aniso), intent(inout) :: this
-    real :: az, dp_r, pl
-    real :: ca, sa, cd, sd, cp, sp
-    real :: R(3,3), S(3,3)
 
-    az   = this%azimuth * DEG2RAD
-    dp_r = this%dip     * DEG2RAD
-    pl   = this%plunge  * DEG2RAD
-
-    ca = cos(az);   sa = sin(az)
-    cd = cos(dp_r); sd = sin(dp_r)
-    cp = cos(pl);   sp = sin(pl)
-
-    !-- R = Rz(plunge) * Rx(dip) * Rz(azimuth)
-    R(1,1) =  cp*ca - sp*cd*sa
-    R(1,2) =  cp*sa + sp*cd*ca
-    R(1,3) =  sp*sd
-    R(2,1) = -sp*ca - cp*cd*sa
-    R(2,2) = -sp*sa + cp*cd*ca
-    R(2,3) =  cp*sd
-    R(3,1) =  sd*sa
-    R(3,2) = -sd*ca
-    R(3,3) =  cd
-
-    !-- S = diag(1/a_minor1, 1/a_major, 1/a_minor2)
-    S = 0.0
-    S(1,1) = 1.0 / max(this%a_minor1, EPSLON)
-    S(2,2) = 1.0 / max(this%a_major,  EPSLON)
-    S(3,3) = 1.0 / max(this%a_minor2, EPSLON)
-
-    this%mat   = matmul(S, R)
+    this%mat   = calc_rotmat(&
+      this%azimuth, this%dip, this%plunge, &
+      this%a_minor1/this%a_major, this%a_minor2/this%a_major)/this%a_major
     this%ready = .true.
   end subroutine build_aniso_mat
 
@@ -341,22 +316,20 @@ contains
     end if
   end function comp_cov_h
 
-  !-- Analytic evaluation at a lag vector; dy and dz are optional for 2D/1D use.
+  !-- Analytic evaluation at a lag vector
   function comp_cov_lag(this, dx, dy, dz) result(res)
     class(vgm_component), intent(in) :: this
-    real,               intent(in) :: dx
-    real, optional,     intent(in) :: dy, dz
+    real,               intent(in) :: dx, dy, dz
     real                         :: res
     res = this%cov_h(this%aniso%h_iso(dx, dy, dz))
   end function comp_cov_lag
 
-  !-- Fast table path; dy and dz are optional for 2D/1D use.
+  !-- Fast table path.
   !   Index into the geometric table in O(1) via the log formula, then
   !   linearly interpolate between the two surrounding breakpoints.
   function comp_cov_tab(this, dx, dy, dz) result(res)
     class(vgm_component), intent(in) :: this
-    real,               intent(in) :: dx
-    real, optional,     intent(in) :: dy, dz
+    real,               intent(in) :: dx, dy, dz
     real                         :: res
     real    :: h, frac
     integer :: i
