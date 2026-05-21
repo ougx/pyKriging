@@ -211,6 +211,9 @@ module kriging
     procedure :: solve
     procedure :: write_weight
     procedure :: read_weight
+    procedure :: reset_obs
+    procedure :: reset_grid
+    procedure :: reset_block
     procedure :: finalize
     procedure :: print_system
   end type
@@ -369,6 +372,9 @@ contains
 
     integer :: ngrid, nn, nb, iblock, igrid, idim
     subname = "t_kriging%set_grid"
+
+    call self%reset_grid()
+    call self%reset_block()
 
     if (self%obs(1)%n == 0) &
       call kriging_error(subname, 'Observation needs to be set first.')
@@ -593,6 +599,7 @@ contains
     real,    intent(in), optional :: variance(:), maxdist
 
     subname = "t_kriging%set_obs"
+    call self%reset_obs(ivar)
     associate(ndim => self%ndim, obs => self%obs(ivar))
       !-- Infer or validate ndim from coord
       if (ndim == 0) then
@@ -1785,6 +1792,85 @@ contains
       read(self%ifile, *) (ctx%weight(1:ctx%nnear(ii), ii), ii = 0, self%nvar)
     end associate
   end subroutine read_weight
+
+
+  !============================================================================
+  ! reset_data
+  !
+  ! Deallocate all allocatable fields of a t_data instance and reset n to 0.
+  ! Called by reset_obs and reset_block (which extend t_data).
+  !============================================================================
+  subroutine reset_data(d)
+    class(t_data), intent(inout) :: d
+    if (allocated(d%coord))    deallocate(d%coord)
+    if (allocated(d%drift))    deallocate(d%drift)
+    if (allocated(d%value))    deallocate(d%value)
+    if (allocated(d%variance)) deallocate(d%variance)
+    d%n = 0
+  end subroutine reset_data
+
+
+  !============================================================================
+  ! reset_obs
+  !
+  ! Deallocate all fields of a t_obsgrid, destroy the k-d tree if present,
+  ! and reset scalar members to their defaults.  Call before re-loading
+  ! observations into an already-initialised t_kriging.
+  !============================================================================
+  subroutine reset_obs(self, ivar)
+    class(t_kriging), intent(inout) :: self
+    integer,          intent(in)    :: ivar
+    associate(obs => self%obs(ivar))
+      call reset_data(obs)
+      if (associated(obs%tree)) then
+        call kdtree2_destroy(obs%tree)
+        nullify(obs%tree)
+      end if
+      obs%nmax              = 0
+      obs%maxdist           = verylarge
+      obs%rotmat            = reshape([1.0,0.0,0.0, 0.0,1.0,0.0, 0.0,0.0,1.0], [3,3])
+      obs%need_search       = .false.
+      obs%anisotropic_search= .false.
+    end associate
+  end subroutine reset_obs
+
+
+  !============================================================================
+  ! reset_grid
+  !
+  ! Deallocate all fields of the t_grid (integration nodes).  Call before
+  ! re-loading the estimation grid into an already-initialised t_kriging.
+  !============================================================================
+  subroutine reset_grid(self)
+    class(t_kriging), intent(inout) :: self
+    associate(g => self%grid)
+      call reset_data(g)
+      if (allocated(g%weight)) deallocate(g%weight)
+    end associate
+  end subroutine reset_grid
+
+
+  !============================================================================
+  ! reset_block
+  !
+  ! Deallocate all fields of the t_blockgrid (estimation targets) and reset
+  ! block_type to 0 (point kriging).  Call before re-loading the block grid
+  ! into an already-initialised t_kriging.
+  !============================================================================
+  subroutine reset_block(self)
+    class(t_kriging), intent(inout) :: self
+    associate(b => self%block)
+      call reset_data(b)
+      if (allocated(b%estimate))    deallocate(b%estimate)
+      if (allocated(b%order))       deallocate(b%order)
+      if (allocated(b%nblockpnt))   deallocate(b%nblockpnt)
+      if (allocated(b%iblockpnt))   deallocate(b%iblockpnt)
+      if (allocated(b%rangescale))  deallocate(b%rangescale)
+      if (allocated(b%localnugget)) deallocate(b%localnugget)
+      if (allocated(b%sample))      deallocate(b%sample)
+      b%block_type = 0
+    end associate
+  end subroutine reset_block
 
 
   !============================================================================
