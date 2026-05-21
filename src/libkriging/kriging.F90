@@ -131,7 +131,7 @@ module kriging
     integer              :: nmax = 0           ! max neighbours used per block
     real                 :: maxdist = verylarge ! max search radius
     real                 :: rotmat(3,3)         ! anisotropy rotation matrix
-    type(kdtree2), pointer :: tree              ! k-d tree for fast NN search
+    type(kdtree2), pointer :: tree => null()   ! k-d tree for fast NN search
     logical              :: need_search = .false.      ! .true. if nmax < n
     logical              :: anisotropic_search = .false. ! search in rotated coords
   end type t_obsgrid

@@ -56,7 +56,6 @@ _lib = _load_lib()
 # ---------------------------------------------------------------------------
 _c_int    = ctypes.c_int
 _c_double = ctypes.c_double
-_c_intptr = ctypes.c_int64   # integer(c_intptr_t) — handle
 _c_char_p = ctypes.c_char_p
 _ptr_int  = ctypes.POINTER(ctypes.c_int)
 _ptr_dbl  = ctypes.POINTER(ctypes.c_double)
@@ -453,9 +452,9 @@ class Kriging:
         )
 
     # ------------------------------------------------------------------
-    def set_vgm(self, ivar: int, jvar: int, spec: str):
+    def set_vgm(self, ivar: int, jvar: int, spec: "str | list[str]"):
         """
-        Add a nested variogram structure for the (ivar, jvar) pair.
+        Add one or more nested variogram structures for the (ivar, jvar) pair.
 
         Parameters
         ----------
@@ -463,20 +462,27 @@ class Kriging:
             Variable indices (1-based). Use ivar=jvar for auto-variograms,
             ivar≠jvar for cross-variograms. The LMC constraint
             b12² ≤ b11 × b22 must be satisfied for each nested structure.
-        spec : str
-            Space-separated variogram specification:
+        spec : str or list of str
+            One variogram specification string, or a list of strings for
+            nested structures.  Each string is space-separated:
             ``"vtype nugget sill a_major a_minor1 a_minor2 azimuth dip plunge"``
 
             vtype is one of: sph, exp, gau, pow, lin, hol, bsq, cir.
 
         Example
         -------
-        >>> k.set_vgm(1, 1, "sph 100.0 900.0 500.0 1000.0 500.0 0.0 0.0 0.0")
+        >>> k.set_vgm(1, 1, "sph 0.0 1.0 500.0 500.0 500.0 0.0 0.0 0.0")
+        >>> k.set_vgm(1, 1, [
+        ...     "nug 0.1 0.0 1.0 1.0 1.0 0.0 0.0 0.0",
+        ...     "sph 0.0 0.9 500.0 500.0 500.0 0.0 0.0 0.0",
+        ... ])
         """
-        _krige_set_vgm(_h(self._handle),
-            _c_int(ivar), _c_int(jvar),
-            spec.encode("utf-8"),
-        )
+        specs = [spec] if isinstance(spec, str) else list(spec)
+        for s in specs:
+            _krige_set_vgm(_h(self._handle),
+                _c_int(ivar), _c_int(jvar),
+                s.encode("utf-8"),
+            )
 
     # ------------------------------------------------------------------
     def set_grid(
@@ -508,7 +514,7 @@ class Kriging:
             assert self.cross_validation, (
               "coord must be speicifed except for corss validation.")
             coord = np.zeros([1, self.ndim])
-            
+
         assert coord.shape[1] == self.ndim, (
             f"coord should be (ngrid, ndim={self.ndim}), got {coord.shape}. "
             "Rows are points, columns are spatial dimensions.")
@@ -773,12 +779,14 @@ def ordinary_kriging(
     obs_coord: np.ndarray,
     obs_value: np.ndarray,
     grid_coord: np.ndarray,
-    variogram_spec: str,
+    vgm_spec: "str | list[str]",
     nmax: int = 20,
     maxdist: Optional[float] = None,
     search_anis1: float = 1.0,
     search_anis2: float = 1.0,
     search_azimuth: float = 0.0,
+    rangescale: Optional[float] = None,
+    localnugget: Optional[float] = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     One-shot ordinary kriging with a single isotropic (or anisotropic) variogram.
@@ -825,8 +833,8 @@ def ordinary_kriging(
     k = Kriging(ndim=ndim, nvar=1)
     k.set_obs(ivar=1, coord=obs_coord, value=obs_value,
               nmax=nmax, maxdist=maxdist)
-    k.set_vgm(ivar=1, jvar=1, spec=variogram_spec)
-    k.set_grid(coord=grid_coord)
+    k.set_vgm(ivar=1, jvar=1, spec=vgm_spec)
+    k.set_grid(coord=grid_coord, rangescale=rangescale, localnugget=localnugget)
     k.set_search(ivar=1, anis1=search_anis1, anis2=search_anis2,
                  azimuth=search_azimuth)
     k.solve()
@@ -838,8 +846,10 @@ def cokriging(
     obs_coords: list[np.ndarray],
     obs_values: list[np.ndarray],
     grid_coord: np.ndarray,
-    variogram_specs: dict,
+    vgm_spec: dict,
     nmax: int = 20,
+    rangescale: Optional[float] = None,
+    localnugget: Optional[float] = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     One-shot ordinary co-kriging with multiple variables.
@@ -852,7 +862,7 @@ def cokriging(
         Observation values per variable.
     grid_coord : ndarray, shape **(ngrid, ndim)**
         Grid coordinates.
-    variogram_specs : dict
+    vgm_spec : dict
         Mapping (ivar, jvar) -> spec string. Both (i,j) and (j,i) can be
         provided; if only (i,j) is given, (j,i) will mirror it automatically
         (handled inside Fortran set_vgm).
@@ -871,9 +881,9 @@ def cokriging(
     ...     obs_values=[val1, val2],
     ...     grid_coord=grid,
     ...     variogram_specs={
-    ...         (1,1): "sph 100 900 500 1000 500 0 0 0",
-    ...         (2,2): "sph  50 450 500 1000 500 0 0 0",
-    ...         (1,2): "sph   0 600 500 1000 500 0 0 0",
+    ...         (1,1): ("sph 100 900 500 1000 500 0 0 0",),
+    ...         (2,2): ("sph  50 450 500 1000 500 0 0 0",),
+    ...         (1,2): ("sph   0 600 500 1000 500 0 0 0",),
     ...     })
     """
     nvar = len(obs_coords)
@@ -883,10 +893,10 @@ def cokriging(
     for i, (coord, value) in enumerate(zip(obs_coords, obs_values), start=1):
         k.set_obs(ivar=i, coord=coord, value=value, nmax=nmax)
 
-    for (iv, jv), spec in variogram_specs.items():
+    for (iv, jv), spec in vgm_spec.items():
         k.set_vgm(ivar=iv, jvar=jv, spec=spec)
 
-    k.set_grid(coord=grid_coord)
+    k.set_grid(coord=grid_coord, rangescale=rangescale, localnugget=localnugget)
 
     for i in range(1, nvar + 1):
         k.set_search(ivar=i)
@@ -900,12 +910,14 @@ def sequential_gaussian_simulation(
     obs_coord: np.ndarray,
     obs_value: np.ndarray,
     grid_coord: np.ndarray,
-    variogram_spec: str,
+    vgm_spec: str,
     nsim: int,
     nmax: int = 20,
     randpath: Optional[np.ndarray] = None,
     sample: Optional[np.ndarray] = None,
     seed: Optional[int] = None,
+    rangescale: Optional[float] = None,
+    localnugget: Optional[float] = None,
 ) -> np.ndarray:
     """
     Sequential Gaussian Simulation.
@@ -918,7 +930,7 @@ def sequential_gaussian_simulation(
         Observation values.
     grid_coord : ndarray, shape **(ngrid, ndim)**
         Grid coordinates.
-    variogram_spec : str
+    vgm_spec : str
     nsim : int
         Number of realisations.
     nmax : int
@@ -932,13 +944,12 @@ def sequential_gaussian_simulation(
         Each row is one realisation in the original (non-randomised) block order.
     """
 
-    ndim  = obs_coord.shape[1]   # (nobs, ndim) -> ndim is axis 1
-    ngrid = grid_coord.shape[0]  # (ngrid, ndim) -> ngrid is axis 0
+    ndim = obs_coord.shape[1]   # (nobs, ndim) -> ndim is axis 1
 
     k = Kriging(ndim=ndim, nvar=1, nsim=nsim, seed=seed)
     k.set_obs(ivar=1, coord=obs_coord, value=obs_value, nmax=nmax)
-    k.set_vgm(ivar=1, jvar=1, spec=variogram_spec)
-    k.set_grid(coord=grid_coord)
+    k.set_vgm(ivar=1, jvar=1, spec=vgm_spec)
+    k.set_grid(coord=grid_coord, rangescale=rangescale, localnugget=localnugget)
     # set_sim with no args: Python generates random path and N(0,1) samples
     k.set_sim(randpath, sample)
     k.set_search(ivar=1)

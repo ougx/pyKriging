@@ -74,6 +74,11 @@ module variogram
   ! Each type carries only its own extra parameters; range and sill live on
   ! vgm_component, keeping the shape types lightweight and reusable.
   !=============================================================================
+  type, extends(variog) :: variog_nug
+  contains
+    procedure :: corefunc => corefunc_nug
+  end type
+
 
   type, extends(variog) :: variog_sph
   contains
@@ -421,6 +426,7 @@ contains
         cc%aniso%a_minor2 = a_minor2
         call cc%aniso%build()
         select case (vtype)
+          case('nug'); allocate(variog_nug :: cc%shape)
           case('sph'); allocate(variog_sph :: cc%shape)
           case('exp'); allocate(variog_exp :: cc%shape)
           case('hol'); allocate(variog_hol :: cc%shape)
@@ -572,6 +578,13 @@ contains
   ! Core correlation functions
   ! All elemental; rdist = h / a_major (dimensionless, post-aniso transform).
   !=============================================================================
+
+  elemental function corefunc_nug(this, rdist) result(res)
+    class(variog_nug), intent(in) :: this
+    real,          intent(in) :: rdist
+    real                      :: res
+    res = 0.0
+  end function
 
   elemental function corefunc_sph(this, rdist) result(res)
     class(variog_sph), intent(in) :: this
