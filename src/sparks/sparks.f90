@@ -274,10 +274,10 @@ program sparks
   ! --- files
   if (len_trim(obsfile1) == 0) &
     call perr("  Error: primary observation file not specified (-of / obsfile1).")
-  if (blockfile == "" .and. facfile == "") &
-    call perr("  Error: either blockfile (-bf) or facfile (-ff) must be specified.")
   if (nobs2 > 0 .and. len_trim(obsfile2) == 0) &
     call perr("  Error: nobs2 > 0 but no secondary observation file specified (-o2).")
+  if (.not. loocv .and. blockfile == "" .and. facfile == "") &
+    call perr("  Error: either blockfile (-bf) or facfile (-ff) must be specified.")
 
   ! --- variograms
   if (nvgm1 == 0) &
@@ -289,14 +289,16 @@ program sparks
   end if
 
   ! --- block / grid geometry
-  if (any(blocksize > zero) .and. gridfile /= '') &
-    call perr("  Error: blocksize (block_type=-4) and gridfile (block_type>0) are mutually exclusive.")
-  if (blockpntweight .and. gridfile == '') &
-    call perr("  Error: -bw (blockpntweight) requires a gridfile (-gf).")
-  if (block_type > 0 .and. len_trim(blockfile) == 0) &
-    call perr("  Error: block_type > 0 requires blockfile (-bf).")
-  if (block_type == -4 .and. all(blocksize == zero)) &
-    call perr("  Error: block_type=-4 (Gaussian quadrature) requires blocksize (-bs).")
+  if (.not. loocv) then
+    if (any(blocksize > zero) .and. gridfile /= '') &
+      call perr("  Error: blocksize (block_type=-4) and gridfile (block_type>0) are mutually exclusive.")
+    if (blockpntweight .and. gridfile == '') &
+      call perr("  Error: -bw (blockpntweight) requires a gridfile (-gf).")
+    if (block_type > 0 .and. len_trim(blockfile) == 0) &
+      call perr("  Error: block_type > 0 requires blockfile (-bf).")
+    if (block_type == -4 .and. all(blocksize == zero)) &
+      call perr("  Error: block_type=-4 (Gaussian quadrature) requires blocksize (-bs).")
+  end if
 
   ! --- anisotropy
   if (anis1 <= zero .or. anis1 > one) &
@@ -611,7 +613,11 @@ contains
         write (strsim(ii), '(A,I0)') 'estimate', ii
       end do
       if (nsim == 0) then
-        write (iout, '(99(A,:,","))') 'igrid', cname(1:ndim), 'estimate', 'variance'
+        if (loocv) then
+          write (iout, '(99(A,:,","))') 'igrid', cname(1:ndim), 'observed', 'estimate', 'variance'
+        else
+          write (iout, '(99(A,:,","))') 'igrid', cname(1:ndim), 'estimate', 'variance'
+        end if
       else
         write (iout, '(99(A,:,","))') 'igrid', cname(1:ndim), (trim(strsim(ii)), ii=1, nsim), 'variance'
       end if
@@ -624,8 +630,13 @@ contains
     call open_output()
     if (writexy) then
       do ib2 = 1, krig%block%n
-        write (iout, "(I0,*(:,',',G0.12))") &
-          ib2, krig%block%coord(:, ib2), krig%block%estimate(:, ib2), krig%block%variance(ib2)
+        if (loocv) then
+          write (iout, "(I0,*(:,',',G0.12))") &
+            ib2, krig%block%coord(:, ib2), krig%obs(1)%value(ib2),krig%block%estimate(:, ib2), krig%block%variance(ib2)
+        else
+          write (iout, "(I0,*(:,',',G0.12))") &
+            ib2, krig%block%coord(:, ib2), krig%block%estimate(:, ib2), krig%block%variance(ib2)
+        end if
       end do
     else
       do ib2 = 1, krig%block%n
@@ -654,15 +665,15 @@ contains
   subroutine print_banner()
     print "(A)", ''
     print "(A)", 'SPARKS - Sequential Pilot-point Assisted Random-path Kriging and Simulation'
-    print "(A)", '  Version:  '//sparks_version//'  ('//trim(sparks_compiler)//' '//trim(sparks_fc_ver)//')  git: '//trim(sparks_githash)
+    print "(13x,A)", 'Version:  '//sparks_version//'  ('//trim(sparks_compiler)//' '//trim(sparks_fc_ver)//')  git: '//trim(sparks_githash)
   end subroutine print_banner
 
   subroutine showhelp()
     integer, parameter :: Mandatory = 3
     call print_banner()
+    print "(A)", ''
     print "(A)", 'Usage:'
     print "(A)", ' sparks -nl sparks.nml  |  sparks -d ndim nobs1 nblock nobs2 ndrift -of obsfile1 [options] [output]'
-    print "(A)", ''
     print "(A)", '   Perform Kriging or Sequential Gaussian Simulation.'
     print "(A)", '   Developed by mou@sspa.com.'
     print "(A)", ' '

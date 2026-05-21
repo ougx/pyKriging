@@ -15,11 +15,12 @@ Then use this module:
 
     k = Kriging(ndim=2, nvar=1)
     k.set_obs(ivar=1, coord=coord, value=value, nmax=20)
-    k.set_vgm(ivar=1, jvar=1, spec="sph 0 1000 500 1000 500 0 0 0")
+    k.set_vgm(ivar=1, jvar=1, spec="sph 0 1.0 1000 500 500 0 0 0") # vtype nugget sill a_major a_minor1 a_minor2 azimuth dip plunge
     k.set_grid(coord=grid_coord)
     k.set_search(ivar=1)
     k.solve()
     est, var = k.get_results()
+    del k    # release memory
 """
 
 import ctypes
@@ -241,11 +242,12 @@ class Kriging:
     ----------------
     >>> k = Kriging(ndim=2, nvar=1)
     >>> k.set_obs(ivar=1, coord=obs_coord, value=obs_value, nmax=20)
-    >>> k.set_vgm(ivar=1, jvar=1, spec="sph 100 900 500 1000 500 0 0 0")
+    >>> k.set_vgm(ivar=1, jvar=1, spec="sph 0 1.0 1000 500 50 0 0 0") # vtype nugget sill a_major a_minor1 a_minor2 azimuth dip plunge
     >>> k.set_grid(coord=grid_coord)
     >>> k.set_search(ivar=1)
     >>> k.solve()
     >>> estimate, variance = k.get_results()
+    >>> del k    # release memory
 
     For sequential Gaussian simulation add ``nsim=N`` to the constructor and
     call :meth:`set_sim` after :meth:`set_grid`.
@@ -463,7 +465,7 @@ class Kriging:
             b12² ≤ b11 × b22 must be satisfied for each nested structure.
         spec : str
             Space-separated variogram specification:
-            ``"vtype nugget sill a_minor1 a_major a_minor2 azimuth dip plunge"``
+            ``"vtype nugget sill a_major a_minor1 a_minor2 azimuth dip plunge"``
 
             vtype is one of: sph, exp, gau, pow, lin, hol, bsq, cir.
 
@@ -479,7 +481,7 @@ class Kriging:
     # ------------------------------------------------------------------
     def set_grid(
         self,
-        coord: np.ndarray,
+        coord: Optional[np.ndarray] = None,
         rangescale: Optional[np.ndarray] = None,
         localnugget: Optional[np.ndarray] = None,
     ):
@@ -502,6 +504,11 @@ class Kriging:
             Additional nugget added per block to model local uncertainty.
             Default: 0.0 for all blocks.
         """
+        if coord is None:
+            assert self.cross_validation, (
+              "coord must be speicifed except for corss validation.")
+            coord = np.zeros([1, self.ndim])
+            
         assert coord.shape[1] == self.ndim, (
             f"coord should be (ngrid, ndim={self.ndim}), got {coord.shape}. "
             "Rows are points, columns are spatial dimensions.")
