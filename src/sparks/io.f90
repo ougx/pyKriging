@@ -27,7 +27,7 @@ contains
     if (.not. present(noheader)) then
       read (ifile, *, iostat=ioerr)
     else if (.not. noheader) then
-      read (ifile, *, iostat=ioerr)  ! skip header unless noheader=.false.
+      read (ifile, *, iostat=ioerr)
     end if
     read (ifile, *, iostat=ioerr) arr1
     close (ifile)
@@ -44,7 +44,7 @@ contains
     if (.not. present(noheader)) then
       read (ifile, *, iostat=ioerr)
     else if (.not. noheader) then
-      read (ifile, *, iostat=ioerr)  ! skip header unless noheader=.false.
+      read (ifile, *, iostat=ioerr)
     end if
     read (ifile, *, iostat=ioerr) arr1
     close (ifile)
@@ -63,7 +63,7 @@ contains
     if (.not. present(noheader)) then
       read (ifile, *, iostat=ioerr)
     else if (.not. noheader) then
-      read (ifile, *, iostat=ioerr)  ! skip header unless noheader=.false.
+      read (ifile, *, iostat=ioerr)
     end if
     read (ifile, *, iostat=ioerr) int1
     close (ifile)
@@ -78,12 +78,11 @@ contains
     logical, intent(in), optional :: noheader
     integer    :: ifile
     integer :: ii, i
-
     open (newunit=ifile, file=trim(file), status='old'); call skip_comment(ifile, ioerr)
     if (.not. present(noheader)) then
       read (ifile, *, iostat=ioerr)
     else if (.not. noheader) then
-      read (ifile, *, iostat=ioerr)  ! skip header unless noheader=.false.
+      read (ifile, *, iostat=ioerr)
     end if
     do i = 1, n
       read (ifile, *, iostat=ioerr) ii, arr1(:, i)
@@ -107,7 +106,7 @@ contains
     if (.not. present(noheader)) then
       read (ifile, *, iostat=ioerr)
     else if (.not. noheader) then
-      read (ifile, *, iostat=ioerr)  ! skip header unless noheader=.false.
+      read (ifile, *, iostat=ioerr)
     end if
     do i = 1, n
       read (ifile, *, iostat=ioerr) ii, arr1(:, i), int1(i)
@@ -130,7 +129,7 @@ contains
     if (.not. present(noheader)) then
       read (ifile, *, iostat=ioerr)
     else if (.not. noheader) then
-      read (ifile, *, iostat=ioerr)  ! skip header unless noheader=.false.
+      read (ifile, *, iostat=ioerr)
     end if
     do i = 1, n
       read (ifile, *, iostat=ioerr) ii, arr1(:, i), arr2(:, i)
@@ -154,7 +153,7 @@ contains
     if (.not. present(noheader)) then
       read (ifile, *, iostat=ioerr)
     else if (.not. noheader) then
-      read (ifile, *, iostat=ioerr)  ! skip header unless noheader=.false.
+      read (ifile, *, iostat=ioerr)
     end if
     do i = 1, n
       read (ifile, *, iostat=ioerr) ii, arr1(:, i), arr2(:, i), int1(i)
@@ -177,7 +176,7 @@ contains
     if (.not. present(noheader)) then
       read (ifile, *, iostat=ioerr)
     else if (.not. noheader) then
-      read (ifile, *, iostat=ioerr)  ! skip header unless noheader=.false.
+      read (ifile, *, iostat=ioerr)
     end if
     do i = 1, n
       read (ifile, *, iostat=ioerr) ii, arr1(:, i), arr2(:, i), arr3(:, i)

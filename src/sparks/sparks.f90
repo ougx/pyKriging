@@ -31,7 +31,7 @@ program sparks
   ! The program's job is now:
   !   1. Parse CLI args
   !   2. Read data files into plain arrays
-  !   3. Transfer data into krig via set_obs / set_grid / set_vgm / set_search
+  !   3. Transfer data into krig via set_vgm / set_obs / set_grid / set_sim / set_search
   !   4. Call krig%solve()
   !   5. Write krig%block%estimate to output
   ! ---------------------------------------------------------------------------
@@ -49,10 +49,10 @@ program sparks
 
   ! inputs — allocatable arrays
   integer, allocatable :: irandpath(:), nblockpnt(:)          ! blocks-kriging geometry
-  real, allocatable :: obs1(:, :), obs1drift(:, :)   ! (xyz+value+variance,n)
-  real, allocatable :: obs2(:, :), obs2drift(:, :)   ! (xyz+value+variance,n)
-  real, allocatable :: grid(:, :)    ! (xyz+weight, ngrid)
-  real, allocatable :: blocks(:, :), blockdrift(:,:)  ! (xyz+value+variance, nblock)
+  real, allocatable :: obs1(:, :), obs1drift(:, :)   ! (xyz+value[+variance], nobs1)
+  real, allocatable :: obs2(:, :), obs2drift(:, :)   ! (xyz+value[+variance], nobs2)
+  real, allocatable :: grid(:, :)    ! (xyz[+weight], ngrid)
+  real, allocatable :: blocks(:, :), blockdrift(:,:)  ! (ndim, nblock)
   real, allocatable :: rangescale(:), localnugget(:)
   real, allocatable :: samples(:, :)                           ! (nsim, nblock) — passed to set_sim
 
@@ -98,53 +98,53 @@ program sparks
     showargs, loocv, anisotropic_search, verbose, blockpntweight, obserror
 
   allocate (opts, source=(/ &
-    option_s("namelist", "nl", 1, "read all settings from a namelist (.nml) file. all other options are ignored if namelist is set."), &
-    option_s("dim", "d", 5, "define spatial dimensions: ndim nobs1 ngrid nobs2 ndrift."), &
-    option_s("obsfile1", "of", 1, "primary observation file. columns: id,x(,y,z),value[,variance][,drifts]."), &
-    option_s("facfile", "ff", 1, "interpolation factor file. created when both facfile and blockfile are defined."), &
-    option_s("blockfile",     "bf",  1, "blocks file. columns: id,x(,y,z)[,drifts]. if gridfile is defined, last column gives number of grid points per blocks."), &
-    option_s("gridfile", "gf", 1, "optional grid file for blocks kriging. columns: id,x(,y,z)[,weight]."), &
-    option_s("blockpntweight", "bw", 0, "read point weights for blocks kriging from the grid file. default: equal weights."), &
-    option_s("pathfile", "pf", 1, "file of simulation path indices. if omitted a random path is generated."), &
-    option_s("samfile", "sf", 1, "file of pre-generated standard-normal samples."), &
-    option_s("obsfile2", "o2", 1, "secondary (covariate) observation file. columns: id,x(,y,z),value[,drifts]."), &
-    option_s("seed", "sd", 1, "seed for random path and sample generation."), &
-    option_s("sim", "s", 0, "enable sequential gaussian simulation. default: disabled."), &
-    option_s("nmax1", "n1", 1, "max primary observations per neighbourhood. default: 200."), &
-    option_s("nmax2", "n2", 1, "max covariate observations per neighbourhood. default: 200."), &
-    option_s("rangescale", "rs", 1, "file of per-blocks variogram range scale factors."), &
-    option_s("localnugget", "ln", 1, "file of per-blocks local nugget values."), &
-    option_s("skmean", "sm", 1, "mean for simple kriging. default: 0."), &
-    option_s("unbias", "u", 0, "unbiasedness constraint: off=simple kriging, on=ordinary kriging."), &
-    option_s("ang1", "a1", 1, "azimuth angle of principal direction (degrees). default: 0."), &
-    option_s("ang2", "a2", 1, "dip angle of principal direction (degrees). default: 0."), &
-    option_s("ang3", "a3", 1, "third rotation / plunge angle (degrees). default: 0."), &
-    option_s("anis1", "s1", 1, "first anisotropy ratio (minor/major range). default: 1."), &
-    option_s("anis2", "s2", 1, "second anisotropy ratio (minor/major range). default: 1."), &
-    option_s("vario1", "v1", 4, "primary variogram: type nugget sill range."), &
-    option_s("vario2", "v2", 4, "secondary variogram. same format as vario1."), &
-    option_s("varioc", "vc", 4, "cross-variogram (primary x secondary). same format as vario1."), &
-    option_s("bounds", "bd", 2, "lower and upper bounds for simulated/estimated values."), &
-    option_s("blocksize", "bs", 1, "blocks dimensions for gaussian quadrature (block_type=-4)."), &
-    option_s("maxdist", "md", 2, "max search distance: two values for primary and covariate. "), &
-    option_s("correct", "cw", 0, "remove negative weights and renormalise to sum to 1."), &
-    option_s("anisosearch", "as", 0, "neighbour search in rotated/scaled (anisotropic) coordinates."), &
-    option_s("obserror", "oe", 0, "observation error variance is present in the input file."), &
-    option_s("fmt", "fm", 1, "fortran write format for output. default: '(G0.12)'."), &
-    option_s("writexy", "xy", 0, "include id and coordinates in output. default: values only."), &
-    option_s("continue", "cc", 0, "set failed blocks to NaN instead of aborting."), &
-    option_s("verbose", "v", 0, "print progress messages during solving."), &
-    option_s("loocv", "cv", 0, "leave-one-out cross-validation: grid equals observations."), &
-    option_s("writemat", "wm", 0, "write kriging matrix and rhs to files for debugging."), &
-    option_s("showargs", "sa", 0, "print full configuration summary before solving."), &
-    option_s("help", "h", 0, "show this help message.") &
+    option_s("namelist",        "nl", 1, "read all settings from a namelist (.nml) file. all other options are ignored if namelist is set."), &
+    option_s("dim",             "d",  5, "define spatial dimensions: ndim nobs1 nblock nobs2 ndrift."), &
+    option_s("obsfile1",        "of", 1, "primary observation file. columns: id,x(,y,z),value[,variance][,drifts]."), &
+    option_s("facfile",         "ff", 1, "interpolation factor file. created when both facfile and blockfile are defined."), &
+    option_s("blockfile",       "bf", 1, "blocks file. columns: id,x(,y,z)[,drifts]. if gridfile is defined, last column gives number of grid points per blocks."), &
+    option_s("gridfile",        "gf", 1, "optional grid file for blocks kriging. columns: id,x(,y,z)[,weight]."), &
+    option_s("blockpntweight",  "bw", 0, "read point weights for blocks kriging from the grid file. default: equal weights."), &
+    option_s("pathfile",        "pf", 1, "file of simulation path indices. if omitted a random path is generated."), &
+    option_s("samfile",         "sf", 1, "file of pre-generated standard-normal samples."), &
+    option_s("obsfile2",        "o2", 1, "secondary (covariate) observation file. columns: id,x(,y,z),value[,drifts]."), &
+    option_s("seed",            "sd", 1, "seed for random path and sample generation."), &
+    option_s("sim",             "s",  0, "enable sequential gaussian simulation. default: disabled."), &
+    option_s("nmax1",           "n1", 1, "max primary observations per neighbourhood. default: 200."), &
+    option_s("nmax2",           "n2", 1, "max covariate observations per neighbourhood. default: 200."), &
+    option_s("rangescale",      "rs", 1, "file of per-blocks variogram range scale factors."), &
+    option_s("localnugget",     "ln", 1, "file of per-blocks local nugget values."), &
+    option_s("skmean",          "sm", 1, "mean for simple kriging. default: 0."), &
+    option_s("unbias",          "u",  0, "unbiasedness constraint: off=simple kriging, on=ordinary kriging."), &
+    option_s("ang1",            "a1", 1, "azimuth angle of principal direction (degrees). default: 0."), &
+    option_s("ang2",            "a2", 1, "dip angle of principal direction (degrees). default: 0."), &
+    option_s("ang3",            "a3", 1, "third rotation / plunge angle (degrees). default: 0."), &
+    option_s("anis1",           "s1", 1, "first anisotropy ratio (minor/major range). default: 1."), &
+    option_s("anis2",           "s2", 1, "second anisotropy ratio (minor/major range). default: 1."), &
+    option_s("vario1",          "v1", 4, "primary variogram: type range sill nugget."), &
+    option_s("vario2",          "v2", 4, "secondary variogram. same format as vario1."), &
+    option_s("varioc",          "vc", 4, "cross-variogram (primary x secondary). same format as vario1."), &
+    option_s("bounds",          "bd", 2, "lower and upper bounds for simulated/estimated values."), &
+    option_s("blocksize",       "bs", 1, "blocks dimensions for gaussian quadrature (block_type=-4)."), &
+    option_s("maxdist",         "md", 2, "max search distance: two values for primary and covariate."), &
+    option_s("correct",         "cw", 0, "remove negative weights and renormalise to sum to 1."), &
+    option_s("anisosearch",     "as", 0, "neighbour search in rotated/scaled (anisotropic) coordinates."), &
+    option_s("obserror",        "oe", 0, "observation error variance is present in the input file."), &
+    option_s("fmt",             "fm", 1, "fortran write format for output. default: '(G0.12)'."), &
+    option_s("writexy",         "xy", 0, "include id and coordinates in output. default: values only."), &
+    option_s("continue",        "cc", 0, "set failed blocks to NaN instead of aborting."), &
+    option_s("verbose",         "v",  0, "print progress messages during solving."), &
+    option_s("loocv",           "cv", 0, "leave-one-out cross-validation: grid equals observations."), &
+    option_s("writemat",        "wm", 0, "write kriging matrix and rhs to files for debugging."), &
+    option_s("showargs",        "sa", 0, "print full configuration summary before solving."), &
+    option_s("help",            "h",  0, "show this help message.") &
   /))
 
   ! ---- default values -------------------------------------------------------
   fomt = '(10(G0.12,:x))'
   outfile = '~'
   obsfile1 = ''; obsfile2 = ''; gridfile = ''; facfile = ''
-  randpath = ''; samfile = ''; blockfile = ''; rsfile = ''
+  randpath = ''; samfile = ''; blockfile = ''; rsfile = ''; lnfile=''
   maxdist1 = large; maxdist2 = large
   nmax1 = 0; nmax2 = 0
   ndrift = 0; unbias = 0; seed = 0
@@ -230,8 +230,7 @@ program sparks
         ! Variogram specs: store as strings; pass to krig%set_vgm after init.
         ! Format expected by t_kriging%set_vgm:
         !   "vtype nugget sill a_major a_minor1 a_minor2 azimuth dip plunge"
-        ! The CLI uses four tokens: type range sill nugget (legacy ppsgs order).
-        ! We repack them into the kriging.f90 spec order here.
+        ! The CLI uses four tokens: type nugget sill range.
       case ("v1")
         nvgm1 = nvgm1 + 1
         vgm_spec1(nvgm1) = adjustl(trim(optarg))
@@ -254,6 +253,8 @@ program sparks
       case ("h"); call showhelp()
       case default; stop
       end select
+      ! Safety exit: if -d was never parsed, ndrift stays at its sentinel value (-1).
+      ! The sanity check below will report the error; no need to keep parsing.
       if (ndrift == -1) exit
     end do
   end if   ! nmlfile == '' (CLI path)
@@ -261,7 +262,6 @@ program sparks
   ! ---- sanity checks -----------------------------------------------
 
   if (ndrift < 0) call perr("  Error: ndrift not set. Use -d or define &dims in the namelist.")
-  if (showargs) call showoptions()
 
   ! --- dimensions
   if (ndim < 1 .or. ndim > 3) &
@@ -317,7 +317,9 @@ program sparks
   end if
 
   ! --- factor file
+  ! facfile + no blockfile       → load previously stored weights from facfile; skip solve
   use_old_weight = facfile /= '' .and. blockfile == ''
+  ! facfile + blockfile present  → solve normally and store weights to facfile for reuse
   store_weight = facfile /= '' .and. blockfile /= ''
 
   ! ---- initialize t_kriging -----------------------------------------------
@@ -341,19 +343,24 @@ program sparks
     seed=seed)
 
   ! ---- allocations ----------------------------------------------------
-  ! Mirrors the original ppsgs pattern: allocate all major arrays up-front
-  ! using the dimension scalars already known from CLI / namelist, before any
-  ! file reads.  Subroutines then fill the pre-allocated arrays directly.
+  ! Allocate all major arrays up-front using dimension scalars already known
+  ! from CLI / namelist, before any file reads.
+  !
+  ! block_type encoding:
+  !   -4  Gaussian quadrature; integration points derived from blocksize (-bs)
+  !    0  point kriging; each row of blockfile is a single target point
+  !   >0  block kriging with explicit discretization points supplied in gridfile
   if (blocksize(1) > zero) then
     block_type = -4
     ngrid = nblock
   else if (gridfile /= '') then
-    ngrid = linecount(gridfile) - 1
+    ngrid = linecount(gridfile) - 1   ! header line excluded
     block_type = 1
   else
     block_type = 0
     ngrid = nblock
   end if
+  ! ntp: column count in the obs array — coordinates + value + (optional) variance
   ntp = ndim + 1
   if (obserror) ntp = ntp + 1
   allocate (obs1(ntp, nobs1))
@@ -369,13 +376,14 @@ program sparks
   end if
   if (.not. loocv) then
     allocate (blocks(ndim, nblock))
+    ! ntp reused: column count in the grid array — coordinates + (optional) point weight
     ntp = ndim
     if (blockpntweight) ntp = ntp + 1
     allocate (grid(ntp, ngrid))
   end if
-  allocate (irandpath(nblock)); irandpath = [(ib, ib=1, nblock)]
-  allocate (rangescale(nblock)); rangescale = 1.0
-  allocate (localnugget(nblock)); localnugget = 0.0
+  allocate (irandpath(nblock)); irandpath = [(ib, ib=1, nblock)]   ! default: sequential path
+  allocate (rangescale(nblock)); rangescale = 1.0    ! default: no range scaling
+  allocate (localnugget(nblock)); localnugget = 0.0  ! default: no local nugget
   if (nsim > 0) allocate (samples(nsim, nblock))
 
   call set_vgm_()
@@ -391,6 +399,8 @@ program sparks
   if (nsim > 0) call set_sim_()
   call set_search_()
 
+  ! ---- show options after krig setup -------------------
+  if (showargs) call showoptions()
   ! ---- hand data to t_kriging and solve -------------------------------------
   call krig%solve()
   call write_output()
@@ -444,6 +454,11 @@ contains
   ! ===========================================================================
   ! Data reading helpers
   ! ===========================================================================
+
+  ! Expand a 4-token CLI variogram spec (type nugget sill range) into the
+  ! 9-token spec expected by krig%set_vgm:
+  !   type nugget sill a_major a_minor1 a_minor2 azimuth dip plunge
+  ! Minor semi-axes are derived from the global anisotropy ratios (anis1, anis2).
   function to_fullvgm(spec) result(fullvgm)
     character(*), intent(in) :: spec
     character(1024)          :: fullvgm
@@ -451,20 +466,21 @@ contains
     character(24)            :: vtype
     real                     :: sill, nugget, a_major, a_minor1, a_minor2
 
-    read (spec, *) vtype, nugget, sill, a_major
+    read (spec, *) vtype, a_major, sill, nugget
     a_minor1 = a_major*anis1; a_minor2 = a_major*anis2
     write (fullvgm, *) vtype(1:3), nugget, sill, a_major, a_minor1, a_minor2, ang1, ang2, ang3
   end function to_fullvgm
 
   subroutine set_vgm_()
-    character(1024)             :: spec
+    character(1024) :: spec   ! unused; kept for potential future debug use
 
-    ! local
+    ! Registration order matters: primary auto (1,1), cross (1,2), secondary auto (2,2).
+    if (verbose) print *, 'Setting variograms'
     do ii = 1, nvgm1
       call krig%set_vgm(ivar=1, jvar=1, spec=to_fullvgm(vgm_spec1(ii)))
     end do
     do ii = 1, nvgmc
-      call krig%set_vgm(ivar=1, jvar=2, spec=to_fullvgm(vgm_specc(ii)))
+      call krig%set_vgm(ivar=1, jvar=2, spec=to_fullvgm(vgm_specc(ii)))   ! cross-variogram
     end do
     do ii = 1, nvgm2
       call krig%set_vgm(ivar=2, jvar=2, spec=to_fullvgm(vgm_spec2(ii)))
@@ -480,9 +496,9 @@ contains
 
     if (verbose) print "(A,I0,A)", ' Reading OBS', ivar, ' in "'//trim(obsfile)//'"'
     if (ndrift > 0) then
-      call read_data(obsfile, nobs, ntp, ndrift, obs, obsdrift, ioerr)
+      call read_data(obsfile, nobs, ndim+1, ndrift, obs, obsdrift, ioerr)
     else
-      call read_data(obsfile, nobs, ntp, obs, ioerr)
+      call read_data(obsfile, nobs, ndim+1, obs, ioerr)
     end if
     if (obserror) then
    call krig%set_obs(ivar=ivar, coord=obs(1:ndim, :), value=obs(ndim + 1, :), variance=obs(ndim + 2, :), nmax=nmax, maxdist=maxdist)
@@ -498,7 +514,7 @@ contains
     nblock = nobs1
     call krig%set_grid()
   else
-    if (verbose) print *, 'Reading Blocks in "'//trim(blockfile)//'"'
+    if (verbose) print *, 'Reading BLOCK in "'//trim(blockfile)//'"'
     if (ndrift > 0) then
       if (block_type > 0) then
         call read_data(blockfile, nblock, ndim, ndrift, blocks, blockdrift, nblockpnt, ioerr)
@@ -513,14 +529,16 @@ contains
       end if
     end if
     if (rsfile /= '') then
-      if (verbose) print *, 'Reading Rangescale in "'//trim(rsfile)//'"'
+      if (verbose) print *, 'Reading RANGESCALE in "'//trim(rsfile)//'"'
       call read_data(rsfile, rangescale, ioerr)
     end if
     if (lnfile /= '') then
-      if (verbose) print *, 'Reading Localnugget in "'//trim(lnfile)//'"'
+      if (verbose) print *, 'Reading LOCALNUGGET in "'//trim(lnfile)//'"'
       call read_data(lnfile, localnugget, ioerr)
     end if
     if (block_type > 0) then
+      ! Block kriging: read explicit discretization points from gridfile.
+      ! nblockpnt(ib) contains the number of grid points belonging to block ib.
       ntp = ndim
       if (blockpntweight) ntp = ndim + 1
       call read_data(gridfile, ngrid, ntp, grid, ioerr)
@@ -530,8 +548,12 @@ contains
         call krig%set_grid(grid(:ndim, :), block_type, nblockpnt=nblockpnt, rangescale=rangescale, localnugget=localnugget)
       end if
     else if (block_type == 0) then
+      ! Point kriging: each block row is a single target point.
       call krig%set_grid(blocks(:ndim, :), block_type, rangescale=rangescale, localnugget=localnugget)
     else
+      ! Gaussian quadrature (block_type = -4): integration points are generated
+      ! internally from the block centres in `blocks` and the supplied blocksize.
+      ! spread() broadcasts the 1-D blocksize vector into a (ndim, nblock) matrix.
       call krig%set_grid(blocks(:ndim,:), block_type, blocksize=spread(blocksize, 2, nblock), rangescale=rangescale, localnugget=localnugget)
     end if
     if (ndrift > 0) call krig%set_grid_drift(blockdrift)
@@ -539,11 +561,16 @@ contains
   end subroutine set_grid_
 
   subroutine set_sim_()
+    ! Four combinations of samfile / randpath availability:
+    !   samfile + randpath → use supplied samples and supplied path
+    !   samfile only       → use supplied samples; krig generates the path
+    !   randpath only      → use supplied path; krig generates samples
+    !   neither            → krig generates both samples and path from seed
     if (samfile /= '') then
-      if (verbose) print *, 'Reading Samples in "'//trim(samfile)//'"'
+      if (verbose) print *, 'Reading SAMPLE in "'//trim(samfile)//'"'
       call read_data(samfile, samples, ioerr)
       if (randpath /= '') then
-        if (verbose) print *, 'Reading Samples in "'//trim(samfile)//'"'
+        if (verbose) print *, 'Reading PATH in "'//trim(randpath)//'"'
         call read_data(randpath, nblock, irandpath, ioerr)
         call krig%set_sim(irandpath, samples)
       else
@@ -551,7 +578,7 @@ contains
       end if
     else
       if (randpath /= '') then
-        if (verbose) print *, 'Reading Samples in "'//trim(samfile)//'"'
+        if (verbose) print *, 'Reading PATH in "'//trim(randpath)//'"'
         call read_data(randpath, nblock, irandpath, ioerr)
         call krig%set_sim(irandpath)
       else
@@ -561,7 +588,6 @@ contains
   end subroutine set_sim_
 
   subroutine set_search_()
-    ! Arrays pre-allocated in main body; just fill them here.
     call krig%set_search(1, anis1, anis2, ang1, ang2, ang3)
     if (nobs2 > 0) call krig%set_search(2, anis1, anis2, ang1, ang2, ang3)
   end subroutine set_search_
@@ -583,9 +609,9 @@ contains
         write (strsim(ii), '(A,I0)') 'estimate', ii
       end do
       if (nsim == 0) then
-        write (iout, '(99(A,:,","))') 'igrid_id', cname(1:ndim), 'estimate', 'variance'
+        write (iout, '(99(A,:,","))') 'igrid', cname(1:ndim), 'estimate', 'variance'
       else
-        write (iout, '(99(A,:,","))') 'igrid_id', cname(1:ndim), (trim(strsim(ii)), ii=1, nsim), 'variance'
+        write (iout, '(99(A,:,","))') 'igrid', cname(1:ndim), (trim(strsim(ii)), ii=1, nsim), 'variance'
       end if
     end if
   end subroutine open_output
@@ -626,7 +652,7 @@ contains
   subroutine showhelp()
     integer, parameter :: Mandatory = 3
     print "(A)", ''
-    print "(A)", ' sparks -nl sparks.nml  |  sparks -d ndim nobs1 ngrid nobs2 ndrift -of obsfile1 [options] [output]'
+    print "(A)", ' sparks -nl sparks.nml  |  sparks -d ndim nobs1 nblock nobs2 ndrift -of obsfile1 [options] [output]'
     print "(A)", ''
     print "(A)", '   Perform Kriging or Sequential Gaussian Simulation.'
     print "(A)", '   Developed by mou@sspa.com.'
@@ -647,10 +673,14 @@ contains
     stop
   end subroutine showhelp
 
+  ! Word-wrap opts(idx)%description at DESCW characters, breaking on spaces where
+  ! possible; fall back to a hard break when no space is found in the window.
+  ! The first line is printed with the flag prefix; continuation lines use
+  ! blank padding (cont) to align below the description column.
   subroutine print_opt(idx)
     integer, intent(in) :: idx
-    integer, parameter  :: DESCW = 68
-    integer, parameter  :: PREFLEN = 32
+    integer, parameter  :: DESCW = 68    ! max description width in characters
+    integer, parameter  :: PREFLEN = 32  ! width of the flag-prefix column
     character(PREFLEN)  :: pref
     character(PREFLEN)  :: cont
     character(2048)     :: desc
@@ -664,10 +694,11 @@ contains
     do while (pos <= dlen)
       nxt = pos + DESCW - 1
       if (nxt < dlen) then
+        ! Walk back from nxt to the nearest space for a clean word break.
         do while (nxt > pos .and. desc(nxt:nxt) /= ' ')
           nxt = nxt - 1
         end do
-        if (nxt == pos) nxt = pos + DESCW - 1
+        if (nxt == pos) nxt = pos + DESCW - 1   ! no space found; hard break
       else
         nxt = dlen
       end if
@@ -677,7 +708,7 @@ contains
         print "(A)", cont//trim(adjustl(desc(pos:nxt)))
       end if
       pos = nxt + 1
-      do while (pos <= dlen .and. desc(pos:pos) == ' ')
+      do while (pos <= dlen .and. desc(pos:pos) == ' ')   ! skip leading spaces on next segment
         pos = pos + 1
       end do
     end do
