@@ -447,9 +447,11 @@ module kriging
 
       if (ivar==1 .and. self%nsim>0) then
         obs%nmax = min(obs%nmax, obs%n+self%block%n)
+        if (obs%nmax<=0) obs%nmax=obs%n+self%block%n
         need_search = obs%n+self%block%n>obs%nmax
       else
         obs%nmax = min(obs%nmax, obs%n)
+        if (obs%nmax<=0) obs%nmax=obs%n
         need_search = obs%n>obs%nmax
       end if
 
@@ -567,7 +569,7 @@ module kriging
       !$OMP PARALLEL DEFAULT(SHARED) PRIVATE(ctx) IF(self%nsim==0 .and. .not. self%store_weight)
       if (verbose) then
 #ifdef _OPENMP
-        print*, "OMP_NUM_THREADS=", omp_get_num_threads()
+        ! print*, "OMP_NUM_THREADS=", omp_get_num_threads()
 #endif
       end if
       allocate(ctx)               ! Required OpenMP 4.0+ for allocatable private variable
@@ -575,7 +577,11 @@ module kriging
       !$OMP DO SCHEDULE(DYNAMIC, 1)
       do ib = 1, nb
         ctx%iblock = ib
+#ifdef _OPENMP
+        if (verbose .and. omp_get_thread_num() == omp_get_num_threads()-1) call progress(ib, nb)
+#else
         if (verbose) call progress(ib, nb)
+#endif
         if (self%use_old_weight) then
           call self%read_weight(ctx)
         else
