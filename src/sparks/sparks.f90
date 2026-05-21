@@ -258,7 +258,7 @@ program sparks
       if (ndrift == -1) exit
     end do
   end if   ! nmlfile == '' (CLI path)
-
+  if (verbose) call print_banner()
   ! ---- sanity checks -----------------------------------------------
 
   if (ndrift < 0) call perr("  Error: ndrift not set. Use -d or define &dims in the namelist.")
@@ -651,14 +651,20 @@ contains
     call krig%print_system()
   end subroutine showoptions
 
+  subroutine print_banner()
+    print "(A)", ''
+    print "(A)", 'SPARKS - Sequential Pilot-point Assisted Random-path Kriging and Simulation'
+    print "(A)", '  Version:  '//sparks_version//'  ('//trim(sparks_compiler)//' '//trim(sparks_fc_ver)//')  git: '//trim(sparks_githash)
+  end subroutine print_banner
+
   subroutine showhelp()
     integer, parameter :: Mandatory = 3
-    print "(A)", ''
+    call print_banner()
+    print "(A)", 'Usage:'
     print "(A)", ' sparks -nl sparks.nml  |  sparks -d ndim nobs1 nblock nobs2 ndrift -of obsfile1 [options] [output]'
     print "(A)", ''
     print "(A)", '   Perform Kriging or Sequential Gaussian Simulation.'
     print "(A)", '   Developed by mou@sspa.com.'
-    print "(A)", '   Version:  '//sparks_version//'  ('//trim(sparks_compiler)//' '//trim(sparks_fc_ver)//')  git: '//trim(sparks_githash)
     print "(A)", ' '
     print "(A)", '   Arguments:'
     do ii = 1, Mandatory
