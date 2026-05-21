@@ -279,7 +279,7 @@ contains
                                                 verbose, cross_validation, neglect_error
     character(len=*), intent(in), optional   :: weight_file
 
-    subname = "t_kriging%initialize: "
+    subname = "t_kriging%initialize"
 
     !-- Transfer optional arguments to self
     if (present(ndim))               self%ndim               = ndim
@@ -302,7 +302,7 @@ contains
     !-- Initialise random seed before allocation so the first draw is correct
     if (present(seed)) then
       if (self%verbose .and. self%nsim > 0) &
-        print "(A,I0)", "random seed is set to ", seed
+        print "(A,I0)", " Random seed is set to ", seed
       call random_seed_initialize(seed)
     end if
 
@@ -368,7 +368,7 @@ contains
     real,    intent(in), optional          :: localnugget(:)  ! per-block extra nugget       [nblocks]
 
     integer :: ngrid, nn, nb, iblock, igrid, idim
-    subname = "t_kriging%set_grid: "
+    subname = "t_kriging%set_grid"
 
     if (self%obs(1)%n == 0) &
       call kriging_error(subname, 'Observation needs to be set first.')
@@ -518,7 +518,7 @@ contains
     class(t_kriging)   :: self
     real, intent(in)   :: drift(:,:)   ! drift values [ndrift, nblock]
 
-    subname = "t_kriging%set_grid_drift: "
+    subname = "t_kriging%set_grid_drift"
     if (.not. associated(self%block)) &
       call kriging_error(subname, 'Call initialize() before set_grid_drift.')
     if (self%block%n == 0) &
@@ -555,7 +555,7 @@ contains
     character(*), intent(in) :: spec
     integer,      intent(in) :: ivar, jvar
 
-    subname = "t_kriging%set_vgm: "
+    subname = "t_kriging%set_vgm"
     if (jvar == ivar) then
       call self%vgm(jvar, ivar)%add(spec = spec)
     else if (jvar > ivar) then
@@ -592,7 +592,7 @@ contains
     real,    intent(in)           :: coord(:,:), value(:)
     real,    intent(in), optional :: variance(:), maxdist
 
-    subname = "t_kriging%set_obs: "
+    subname = "t_kriging%set_obs"
     associate(ndim => self%ndim, obs => self%obs(ivar))
       !-- Infer or validate ndim from coord
       if (ndim == 0) then
@@ -641,7 +641,7 @@ contains
     integer, intent(in) :: ivar
     real,    intent(in) :: drift(:,:)   ! [ndrift, nobs]
 
-    subname = "t_kriging%set_obs_drift: "
+    subname = "t_kriging%set_obs_drift"
     if (.not. associated(self%obs)) &
       call kriging_error(subname, 'Call initialize() before set_obs_drift.')
     if (self%obs(ivar)%n == 0) &
@@ -694,7 +694,7 @@ contains
     real,    allocatable :: temp(:,:), samp(:)
     integer              :: iblock, ifile, isim
 
-    subname = "t_kriging%set_sim: "
+    subname = "t_kriging%set_sim"
     if (self%block%n == 0) call kriging_error(subname, 'Grid needs to be set first.')
     if (any(self%obs%n == 0)) call kriging_error(subname, 'Observations need to be set first.')
 
@@ -880,7 +880,7 @@ contains
     class(t_kriging) :: self
     integer          :: ivar, jvar
 
-    subname = "t_kriging%prepare: "
+    subname = "t_kriging%prepare"
 
     !-- Validate that all required arrays have been provided
     if (self%ndrift > 0) then
@@ -967,7 +967,7 @@ contains
     integer                   :: ib
     real, allocatable          :: temp(:,:)
 
-    subname = "t_kriging%solve: "
+    subname = "t_kriging%solve"
     call self%prepare()
 
     associate(nb => self%block%n, verbose => self%verbose)
@@ -1292,7 +1292,7 @@ contains
 
     integer          :: ivar, jvar, irow1, irow2, icol1, icol2
 
-    subname = "t_kriging%assemble_linear_system: "
+    subname = "t_kriging%assemble_linear_system"
     associate(nvar => self%nvar, dist => ctx%sqdist, npp => ctx%npp)
 
       !-- Find neighbours for each variable
@@ -1423,7 +1423,7 @@ contains
     integer            :: info, i, j, k1
     real               :: lag(3)
 
-    subname = "t_kriging%solve_linear_system: "
+    subname = "t_kriging%solve_linear_system"
     lag = 0.0
 
     associate( &

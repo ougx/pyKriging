@@ -312,7 +312,8 @@ program sparks
 ! SGS reminder: variogram sill should equal 1 for correct simulation variance.
 ! This is not enforced here because nested structures may sum to 1 individually.
   if (nsim > 0) then
-    if (verbose) print *, 'SGSIM activated. Note: SGSIM recomands standardised variogram (total sill = 1.0).'
+    if (verbose) print "(A)", ' SGSIM activated. Note: SGSIM recomands standardised variogram (total sill = 1.0).'
+    if (nmax1==0) call perr("  Error: nmax1 must be > 0 for simulation.")
     if (loocv) call perr("  Error: simulation cannot be used with leave-one-out cross-validation.")
   end if
   if (loocv) nblock = nobs1
