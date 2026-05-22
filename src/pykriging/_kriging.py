@@ -366,6 +366,7 @@ class Kriging:
         self.bounds = c_bounds
         self.sk_mean = sk_mean
         self.seed = seed
+
     # ------------------------------------------------------------------
     def set_obs(
         self,
@@ -439,6 +440,8 @@ class Kriging:
             Drift values. Rows are observations, columns are drift functions.
             Transposed to (ndrift, nobs) internally before calling Fortran.
         """
+        if self.ndrift == 0:
+            raise ValueError("ndrift must be > 0 when setting drift values.")
         drift_f  = _drift_to_fortran(drift)   # (nobs, ndrift) -> (ndrift, nobs)
         ndrift_c = drift_f.shape[0]
         nobs     = drift_f.shape[1]
@@ -619,6 +622,8 @@ class Kriging:
             sub-nodes), even for block kriging.
             Transposed to (ndrift, nblocks) internally before calling Fortran.
         """
+        if self.ndrift == 0:
+            raise ValueError("ndrift must be > 0 when setting drift values.")
         drift_f  = _drift_to_fortran(drift)   # (nblocks, ndrift) -> (ndrift, nblocks)
         ndrift_c = drift_f.shape[0]
         nblocks  = drift_f.shape[1]

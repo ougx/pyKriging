@@ -66,3 +66,5 @@ Thumbs.db
 *rhsB_*.csv
 bin/sparks.exe
 bin/sparks.pdb
+todo/*
+sgsim.dat
