@@ -84,14 +84,14 @@ grid_coord = np.mgrid[0:1.1:0.25, 0:1.1:0.25].reshape(2,-1).T
 
 est, var = ordinary_kriging(
     obs_coord, obs_value, grid_coord,
-    variogram_spec="sph 0.0 1.0 0.8 1.0 0.8 0.0 0.0 0.0",
+    vgm_spec=dict(vtype="sph", nugget=0.0, sill=1.0, a_major=1.0, a_minor1=0.8),
     nmax=5,
 )
 print(est.shape, var.shape)   # (25,) (25,)
 
 # --- Full class interface ---
 k = Kriging(ndim=2, nvar=1)
-k.set_vgm(ivar=1, jvar=1, spec="sph 0.0 1.0 1.0 0.8 0.8 0.0 0.0 0.0")
+k.set_vgm(ivar=1, jvar=1, vtype="sph", nugget=0.0, sill=1.0, a_major=1.0, a_minor1=0.8)
 k.set_obs(ivar=1, coord=obs_coord, value=obs_value, nmax=5)
 k.set_grid(coord=grid_coord)
 k.set_sim()
@@ -116,31 +116,27 @@ drift      = np.array([[d1a,d1b], [d2a,d2b], ...])  # shape (nobs, ndrift)
 
 ---
 
-## Variogram specification string
+## Variogram parameters
 
-Variograms are described as a space-separated string:
+Variograms are specified via keyword arguments to `set_vgm`:
 
-```
-"vtype  nugget  sill  a_major  a_minor1  a_minor2  azimuth  dip  plunge"
-```
-
-| Field | Description |
-|-------|-------------|
-| `vtype` | Model type: `sph` `exp` `gau` `pow` `lin` `hol` `bsq` `cir` |
-| `nugget` | Nugget effect |
-| `sill` | Partial sill (variance contributed by this structure) |
-| `a_major` | Range along the major axis, [Y] |
-| `a_minor1` | Range along the minor horizontal axis |
-| `a_minor2` | Range along the vertical axis (3D only) |
-| `azimuth` | Azimuth of major axis (degrees, clockwise from North) |
-| `dip` | Dip angle (degrees, positive downward) |
-| `plunge` | Plunge angle (degrees) |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `vtype` | *(required)* | Model type: `sph` `exp` `gau` `pow` `lin` `hol` `bsq` `cir` `nug` |
+| `nugget` | `0.0` | Nugget effect |
+| `sill` | `1.0` | Partial sill (variance contributed by this structure) |
+| `a_major` | `1.0` | Range along the major axis |
+| `a_minor1` | `a_major` | Range along the minor horizontal axis (defaults to isotropic) |
+| `a_minor2` | `a_minor1` | Range along the vertical axis (3D only) |
+| `azimuth` | `0.0` | Azimuth of major axis (degrees, clockwise from North) |
+| `dip` | `0.0` | Dip angle (degrees, positive downward) |
+| `plunge` | `0.0` | Plunge angle (degrees) |
 
 Call `set_vgm` multiple times to build a composite (nested) model:
 
 ```python
-k.set_vgm(1, 1, "sph 100.0 400.0 1000 500 500 0 0 0")   # structure 1
-k.set_vgm(1, 1, "exp   0.0 500.0  500 300 300 0 0 0")   # structure 2
+k.set_vgm(1, 1, vtype="sph", nugget=100.0, sill=400.0, a_major=1000, a_minor1=500)  # structure 1
+k.set_vgm(1, 1, vtype="exp", nugget=0.0,   sill=500.0, a_major=500,  a_minor1=300)  # structure 2
 ```
 
 ---
@@ -154,10 +150,10 @@ est, var = cokriging(
     obs_coords=[coord_primary, coord_secondary],
     obs_values=[value_primary, value_secondary],
     grid_coord=grid,
-    variogram_specs={
-        (1, 1): "sph 0 1.0 1000 500 500 0 0 0",   # primary auto-variogram
-        (2, 2): "sph 0 1.0 1000 500 500 0 0 0",   # secondary auto-variogram
-        (1, 2): "sph 0 0.8 1000 500 500 0 0 0",   # cross-variogram (b12²≤b11·b22)
+    vgm_spec={
+        (1, 1): dict(vtype="sph", nugget=0, sill=1.0, a_major=1000, a_minor1=500),  # primary auto-vgm
+        (2, 2): dict(vtype="sph", nugget=0, sill=1.0, a_major=1000, a_minor1=500),  # secondary auto-vgm
+        (1, 2): dict(vtype="sph", nugget=0, sill=0.8, a_major=1000, a_minor1=500),  # cross-vgm (b12²≤b11·b22)
     },
     nmax=20,
 )
@@ -173,7 +169,7 @@ from pykriging import sequential_gaussian_simulation
 # Returns shape (nsim, ngrid)
 sims = sequential_gaussian_simulation(
     obs_coord, obs_value, grid_coord,
-    variogram_spec="sph 0.0 1.0 500 1000 500 0 0 0",
+    vgm_spec=dict(vtype="sph", nugget=0.0, sill=1.0, a_major=1000, a_minor1=500),
     nsim=100,
     nmax=20,
     seed=42,

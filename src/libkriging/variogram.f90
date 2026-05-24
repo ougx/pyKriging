@@ -187,7 +187,9 @@ module variogram
     real     :: cov0    = 0.0
     type(vgm_component) :: structs(maxvgm)
   contains
-    procedure :: add           => struct_add
+    procedure :: add_args      => struct_add_args
+    procedure :: add_comp      => struct_add_comp
+    generic   :: add           => add_args, add_comp
     procedure :: build_all_tables
     procedure :: cov_h         => struct_cov_h     ! isotropic scalar h
     procedure :: cov_lag       => struct_cov_lag   ! analytic, dx [,dy [,dz]]
@@ -395,55 +397,57 @@ contains
   ! vgm_struct
   !=============================================================================
 
-  subroutine struct_add(this, comp, spec)
-    class(vgm_struct),   intent(inout)        :: this
-    type(vgm_component), intent(in), optional :: comp
-    character(*)       , intent(in), optional :: spec
-    ! local
-    character(3)             :: vtype
-    real                     :: sill, nugget, azimuth, dip, plunge, a_major, a_minor1, a_minor2
+  subroutine struct_add_comp(this, comp)
+    class(vgm_struct),   intent(inout) :: this
+    type(vgm_component), intent(in)    :: comp
     if (this%nstruct >= maxvgm) &
       error stop 'vgm_struct%add: exceeded maxvgm nested structures'
-    if (present(comp)) then
-      if (.not. allocated(comp%shape)) &
-        error stop 'vgm_struct%add: component shape not allocated'
-      if (.not. comp%aniso%ready) &
-        error stop 'vgm_struct%add: aniso matrix not built — call aniso%build()'
-      this%nstruct = this%nstruct + 1
-      this%structs(this%nstruct) = comp
-      this%cov0 = this%cov0 + comp%sill + comp%shape%nugget
-    else if (present(spec)) then
-      read(spec, *) vtype, nugget, sill, a_major, a_minor1, a_minor2, azimuth, dip, plunge
-      this%nstruct = this%nstruct + 1
-      associate (cc => this%structs(this%nstruct))
-        if (allocated(cc%shape))   deallocate(cc%shape)
-        cc%sill        = sill
-        cc%aniso%azimuth = azimuth
-        cc%aniso%dip     = dip
-        cc%aniso%plunge  = plunge
-        cc%aniso%a_major = a_major
-        cc%aniso%a_minor1 = a_minor1
-        cc%aniso%a_minor2 = a_minor2
-        call cc%aniso%build()
-        select case (vtype)
-          case('nug'); allocate(variog_nug :: cc%shape)
-          case('sph'); allocate(variog_sph :: cc%shape)
-          case('exp'); allocate(variog_exp :: cc%shape)
-          case('hol'); allocate(variog_hol :: cc%shape)
-          case('gau'); allocate(variog_gau :: cc%shape)
-          case('pow'); allocate(variog_pow :: cc%shape)
-          case('bsq'); allocate(variog_bsq :: cc%shape)
-          case('cir'); allocate(variog_cir :: cc%shape)
-          case('lin'); allocate(variog_lin :: cc%shape)
-        case default; print*, 'Unknown variogram model.'//new_line("")//trim(spec); stop
-        end select
-        cc%shape%vtype = vtype
-        this%cov0 = this%cov0 + sill + nugget
-      end associate
-    else
-      error stop 'vgm_struct%add: neither component nor spec provided'
-    end if
-  end subroutine struct_add
+    if (.not. allocated(comp%shape)) &
+      error stop 'vgm_struct%add: component shape not allocated'
+    if (.not. comp%aniso%ready) &
+      error stop 'vgm_struct%add: aniso matrix not built — call aniso%build()'
+    this%nstruct = this%nstruct + 1
+    this%structs(this%nstruct) = comp
+    this%cov0 = this%cov0 + comp%sill + comp%shape%nugget
+  end subroutine struct_add_comp
+
+  subroutine struct_add_args(this, vtype, nugget, sill, &
+                              a_major, a_minor1, a_minor2, azimuth, dip, plunge)
+    class(vgm_struct), intent(inout) :: this
+    character(*),      intent(in)    :: vtype
+    real,              intent(in)    :: nugget, sill
+    real,              intent(in)    :: a_major, a_minor1, a_minor2
+    real,              intent(in)    :: azimuth, dip, plunge
+    if (this%nstruct >= maxvgm) &
+      error stop 'vgm_struct%add: exceeded maxvgm nested structures'
+    this%nstruct = this%nstruct + 1
+    associate (cc => this%structs(this%nstruct))
+      if (allocated(cc%shape)) deallocate(cc%shape)
+      cc%sill            = sill
+      cc%aniso%azimuth   = azimuth
+      cc%aniso%dip       = dip
+      cc%aniso%plunge    = plunge
+      cc%aniso%a_major   = a_major
+      cc%aniso%a_minor1  = a_minor1
+      cc%aniso%a_minor2  = a_minor2
+      call cc%aniso%build()
+      select case (trim(vtype))
+        case('nug'); allocate(variog_nug :: cc%shape)
+        case('sph'); allocate(variog_sph :: cc%shape)
+        case('exp'); allocate(variog_exp :: cc%shape)
+        case('hol'); allocate(variog_hol :: cc%shape)
+        case('gau'); allocate(variog_gau :: cc%shape)
+        case('pow'); allocate(variog_pow :: cc%shape)
+        case('bsq'); allocate(variog_bsq :: cc%shape)
+        case('cir'); allocate(variog_cir :: cc%shape)
+        case('lin'); allocate(variog_lin :: cc%shape)
+        case default
+          print*, 'vgm_struct%add: unknown variogram type: '//trim(vtype); stop
+      end select
+      cc%shape%vtype = trim(vtype)
+      this%cov0 = this%cov0 + sill + nugget
+    end associate
+  end subroutine struct_add_args
 
   !-- Build tables for all structures.
   !-- Build tables for all structures.

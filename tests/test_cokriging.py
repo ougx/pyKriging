@@ -60,26 +60,32 @@ _A1_MIN = 20.0
 _A2_MAJ = 150.0
 _A2_MIN = 100.0
 
-# Variogram spec strings — one per nested component.
-# Format: "sph  nugget  sill  a_major  a_minor  a_minor_vert  az  dip  plunge"
-# (a_minor_vert = a_major for 2-D; dip = plunge = 0)
+# Variogram dicts — one per nested component.
+# Keys: vtype, nugget, sill, a_major, a_minor1 (minor horizontal),
+#       a_minor2 (= a_major for 2-D), azimuth
 
 gamma_V = dict(nugget=440000, sill1=70000, sill2=95000)
 _VGM_VV = [
-    f"sph  {gamma_V['nugget']}  {gamma_V['sill1']}  {_A1_MAJ}  {_A1_MIN}  {_A1_MAJ}  {_AZ}  0.0  0.0",
-    f"sph       0.0  {gamma_V['sill2']}  {_A2_MAJ}  {_A2_MIN}  {_A2_MAJ}  {_AZ}  0.0  0.0",
+    dict(vtype="sph", nugget=gamma_V["nugget"], sill=gamma_V["sill1"],
+         a_major=_A1_MAJ, a_minor1=_A1_MIN, a_minor2=_A1_MAJ, azimuth=_AZ),
+    dict(vtype="sph", nugget=0.0,              sill=gamma_V["sill2"],
+         a_major=_A2_MAJ, a_minor1=_A2_MIN, a_minor2=_A2_MAJ, azimuth=_AZ),
 ]
 
 gamma_U = dict(nugget=22000, sill1=40000, sill2=45000)
 _VGM_UU = [
-    f"sph   {gamma_U['nugget']}  {gamma_U['sill1']}  {_A1_MAJ}  {_A1_MIN}  {_A1_MAJ}  {_AZ}  0.0  0.0",
-    f"sph       0.0  {gamma_U['sill2']}  {_A2_MAJ}  {_A2_MIN}  {_A2_MAJ}  {_AZ}  0.0  0.0",
+    dict(vtype="sph", nugget=gamma_U["nugget"], sill=gamma_U["sill1"],
+         a_major=_A1_MAJ, a_minor1=_A1_MIN, a_minor2=_A1_MAJ, azimuth=_AZ),
+    dict(vtype="sph", nugget=0.0,              sill=gamma_U["sill2"],
+         a_major=_A2_MAJ, a_minor1=_A2_MIN, a_minor2=_A2_MAJ, azimuth=_AZ),
 ]
 
 gamma_VU = dict(nugget=47000, sill1=50000, sill2=40000)
 _VGM_VU = [
-    f"sph   {gamma_VU['nugget']}  {gamma_VU['sill1']}  {_A1_MAJ}  {_A1_MIN}  {_A1_MAJ}  {_AZ}  0.0  0.0",
-    f"sph       0.0  {gamma_VU['sill2']}  {_A2_MAJ}  {_A2_MIN}  {_A2_MAJ}  {_AZ}  0.0  0.0",
+    dict(vtype="sph", nugget=gamma_VU["nugget"], sill=gamma_VU["sill1"],
+         a_major=_A1_MAJ, a_minor1=_A1_MIN, a_minor2=_A1_MAJ, azimuth=_AZ),
+    dict(vtype="sph", nugget=0.0,               sill=gamma_VU["sill2"],
+         a_major=_A2_MAJ, a_minor1=_A2_MIN, a_minor2=_A2_MAJ, azimuth=_AZ),
 ]
 
 # Total sills (nugget + all structures)
@@ -127,11 +133,11 @@ def _build_cok(coord_v, val_v, coord_u, val_u, grid, nmax=20):
     k.set_obs(ivar=1, coord=coord_v, value=val_v, nmax=nmax)
     k.set_obs(ivar=2, coord=coord_u, value=val_u, nmax=nmax)
     for spec in _VGM_VV:
-        k.set_vgm(ivar=1, jvar=1, spec=spec)
+        k.set_vgm(ivar=1, jvar=1, **spec)
     for spec in _VGM_UU:
-        k.set_vgm(ivar=2, jvar=2, spec=spec)
+        k.set_vgm(ivar=2, jvar=2, **spec)
     for spec in _VGM_VU:
-        k.set_vgm(ivar=1, jvar=2, spec=spec)
+        k.set_vgm(ivar=1, jvar=2, **spec)
     k.set_grid(coord=grid)
     k.set_search(ivar=1)
     k.set_search(ivar=2)
@@ -191,7 +197,7 @@ class TestCoKrigingTextbook:
         k = Kriging(ndim=2, nvar=1)
         k.set_obs(ivar=1, coord=coord_u, value=val_u, nmax=20)
         for spec in _VGM_UU:
-            k.set_vgm(ivar=1, jvar=1, spec=spec)
+            k.set_vgm(ivar=1, jvar=1, **spec)
         k.set_grid(coord=_GRID)
         k.set_search(ivar=1)
         k.solve()
@@ -216,7 +222,7 @@ class TestCoKrigingTextbook:
         k_ok = Kriging(ndim=2, nvar=1)
         k_ok.set_obs(ivar=1, coord=coord_u, value=val_u, nmax=20)
         for spec in _VGM_UU:
-            k_ok.set_vgm(ivar=1, jvar=1, spec=spec)
+            k_ok.set_vgm(ivar=1, jvar=1, **spec)
         k_ok.set_grid(coord=_GRID)
         k_ok.set_search(ivar=1)
         k_ok.solve()
@@ -231,11 +237,11 @@ class TestCoKrigingTextbook:
         k_cok.set_obs(ivar=1, coord=coord_u, value=val_u, nmax=20)  # U = primary
         k_cok.set_obs(ivar=2, coord=coord_v, value=val_v, nmax=20)  # V = secondary
         for spec in _VGM_UU:
-            k_cok.set_vgm(ivar=1, jvar=1, spec=spec)
+            k_cok.set_vgm(ivar=1, jvar=1, **spec)
         for spec in _VGM_VV:
-            k_cok.set_vgm(ivar=2, jvar=2, spec=spec)
+            k_cok.set_vgm(ivar=2, jvar=2, **spec)
         for spec in _VGM_VU:
-            k_cok.set_vgm(ivar=1, jvar=2, spec=spec)
+            k_cok.set_vgm(ivar=1, jvar=2, **spec)
         k_cok.set_grid(coord=_GRID)
         k_cok.set_search(ivar=1)
         k_cok.set_search(ivar=2)

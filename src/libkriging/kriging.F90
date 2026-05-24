@@ -547,27 +547,32 @@ contains
   ! requires two calls).  Only the upper triangle (jvar >= ivar) needs to be
   ! specified; the lower triangle is filled symmetrically.
   !
-  ! spec format: "vtype nugget sill a_major a_minor1 a_minor2 azimuth dip plunge"
-  !   vtype    : sph, exp, gau, pow, cir, hol, or lin
+  !   vtype    : sph, exp, gau, pow, cir, hol, lin, or nug
   !   nugget   : nugget contribution of this structure
   !   sill     : partial sill
   !   a_major  : range along principal direction
-  !   a_minor1 : range along first minor direction
-  !   a_minor2 : range along second minor direction
-  !   azimuth, dip, plunge : rotation angles in degrees
+  !   a_minor1 : range along first minor direction  (default: a_major)
+  !   a_minor2 : range along second minor direction (default: a_minor1)
+  !   azimuth, dip, plunge : rotation angles in degrees (default: 0)
   !============================================================================
-  subroutine set_vgm(self, ivar, jvar, spec)
-    class(t_kriging)         :: self
-    character(*), intent(in) :: spec
-    integer,      intent(in) :: ivar, jvar
+  subroutine set_vgm(self, ivar, jvar, vtype, nugget, sill, &
+                     a_major, a_minor1, a_minor2, azimuth, dip, plunge)
+    class(t_kriging), intent(inout) :: self
+    integer,          intent(in)    :: ivar, jvar
+    character(*),     intent(in)    :: vtype
+    real,             intent(in)    :: nugget, sill, a_major, a_minor1, a_minor2
+    real,             intent(in)    :: azimuth, dip, plunge
 
     subname = "t_kriging%set_vgm"
     if (jvar == ivar) then
-      call self%vgm(jvar, ivar)%add(spec = spec)
+      call self%vgm(jvar, ivar)%add_args(trim(vtype), nugget, sill, &
+                                         a_major, a_minor1, a_minor2, azimuth, dip, plunge)
     else if (jvar > ivar) then
-      !-- Fill both triangle entries with the same spec (cross-variogram is symmetric)
-      call self%vgm(jvar, ivar)%add(spec = spec)
-      call self%vgm(ivar, jvar)%add(spec = spec)
+      !-- Fill both triangle entries (cross-variogram is symmetric)
+      call self%vgm(jvar, ivar)%add_args(trim(vtype), nugget, sill, &
+                                         a_major, a_minor1, a_minor2, azimuth, dip, plunge)
+      call self%vgm(ivar, jvar)%add_args(trim(vtype), nugget, sill, &
+                                         a_major, a_minor1, a_minor2, azimuth, dip, plunge)
     else
       call kriging_error(subname, 'jvar must be >= ivar to set the upper triangle of the variogram matrix')
     end if

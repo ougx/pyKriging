@@ -31,16 +31,16 @@ from pykriging import Kriging, ordinary_kriging
 # Constants
 # ---------------------------------------------------------------------------
 
-_VGM_PC2D = "sph 0.0  0.12 5000.0 5000.0 5000.0 0.0 0.0 0.0"
+_VGM_PC2D = dict(vtype="sph", nugget=0.0,  sill=0.12, a_major=5000.0)
 
 # Two-structure decomposition used by multi-struct tests.
 # _VGM_NUG + _VGM_SPH  →  nugget=0.04, sill=0.08, range=5000
-_VGM_NUG  = "sph 0.04 0.0  5000.0 5000.0 5000.0 0.0 0.0 0.0"
-_VGM_SPH  = "sph 0.0  0.08 5000.0 5000.0 5000.0 0.0 0.0 0.0"
+_VGM_NUG  = dict(vtype="sph", nugget=0.04, sill=0.0,  a_major=5000.0)
+_VGM_SPH  = dict(vtype="sph", nugget=0.0,  sill=0.08, a_major=5000.0)
 
 # Long-range spherical + short-range exponential (total sill = 0.12)
-_VGM_LONG  = "sph 0.0  0.08 5000.0 5000.0 5000.0 0.0 0.0 0.0"
-_VGM_SHORT = "exp 0.0  0.04  200.0  200.0  200.0 0.0 0.0 0.0"
+_VGM_LONG  = dict(vtype="sph", nugget=0.0, sill=0.08, a_major=5000.0)
+_VGM_SHORT = dict(vtype="exp", nugget=0.0, sill=0.04, a_major=200.0)
 
 # Two interior grid points not co-located with any observation
 _INTERIOR_GRID = np.array([[580000.0, 4395000.0],
@@ -54,7 +54,7 @@ _NMAX = 20
 # ---------------------------------------------------------------------------
 
 def _run(coord, value, grid, vgm_spec=(_VGM_PC2D,), nmax=_NMAX, **kw):
-    """Run ordinary kriging; specs is an iterable of variogram spec strings."""
+    """Run ordinary kriging; vgm_spec is a dict or iterable of dicts."""
     return ordinary_kriging(coord, value, grid, vgm_spec, nmax, **kw)
 
 
@@ -82,7 +82,7 @@ class TestCrossValidation:
         coord, value = pc2d_obs
         k = Kriging(ndim=2, nvar=1, cross_validation=True, verbose=0)
         k.set_obs(ivar=1, coord=coord, value=value)   # no nmax limit → matches reference
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_PC2D)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_PC2D)
         k.set_grid_cv()
         k.set_search(ivar=1)
         k.solve()
@@ -152,7 +152,7 @@ class TestCrossValidation:
 
         def _run_cv():
             k.set_obs(ivar=1, coord=coord, value=value)
-            k.set_vgm(ivar=1, jvar=1, spec=_VGM_PC2D)
+            k.set_vgm(ivar=1, jvar=1, **_VGM_PC2D)
             k.set_grid_cv()
             k.set_search(ivar=1)
             k.solve()
@@ -200,8 +200,8 @@ class TestMultiStructVariogram:
                + sph(nug=0, sill=0.08, range=5000)
         """
         coord, value = pc2d_obs
-        VGM_A = "sph 0.0 0.04 5000.0 5000.0 5000.0 0.0 0.0 0.0"
-        VGM_B = "sph 0.0 0.08 5000.0 5000.0 5000.0 0.0 0.0 0.0"
+        VGM_A = dict(vtype="sph", nugget=0.0, sill=0.04, a_major=5000.0)
+        VGM_B = dict(vtype="sph", nugget=0.0, sill=0.08, a_major=5000.0)
 
         est_single, var_single = _run(coord, value, _INTERIOR_GRID, vgm_spec=(_VGM_PC2D,))
         est_split,  var_split  = _run(coord, value, _INTERIOR_GRID, vgm_spec=(VGM_A, VGM_B))
@@ -230,7 +230,7 @@ class TestMultiStructVariogram:
     def test_three_structure_model_variance_nonnegative(self, pc2d_obs):
         """Kriging variance must remain non-negative with a three-structure model."""
         coord, value = pc2d_obs
-        VGM_MED = "gau 0.0 0.02 1000.0 1000.0 1000.0 0.0 0.0 0.0"
+        VGM_MED = dict(vtype="gau", nugget=0.0, sill=0.02, a_major=1000.0)
         _, var = _run(coord, value, _INTERIOR_GRID,
                       vgm_spec=(_VGM_LONG, _VGM_SHORT, VGM_MED))
         assert np.all(var >= -1e-10), (
@@ -290,7 +290,7 @@ class TestExactMatch:
         k = Kriging(ndim=2, nvar=1, verbose=0)
         k.set_obs(ivar=1, coord=coord, value=value, nmax=_NMAX,
                   variance=np.full(len(value), obs_err))
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_PC2D)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_PC2D)
         k.set_grid(coord=coord[[5]])
         k.set_search(ivar=1)
         k.solve()
@@ -326,8 +326,8 @@ class TestExactMatch:
         coord, value = pc2d_obs
         k = Kriging(ndim=2, nvar=1, verbose=0)
         k.set_obs(ivar=1, coord=coord, value=value, nmax=_NMAX)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_NUG)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_SPH)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_NUG)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_SPH)
         k.set_grid(coord=coord[[7]])
         k.set_search(ivar=1)
         k.solve()
@@ -345,7 +345,7 @@ class TestExactMatch:
 
         k = Kriging(ndim=2, nvar=1, verbose=0)
         k.set_obs(ivar=1, coord=coord, value=value, nmax=n)
-        k.set_vgm(ivar=1, jvar=1, spec="sph 0.0 1.0 200.0 200.0 200.0 0.0 0.0 0.0")
+        k.set_vgm(ivar=1, jvar=1, vtype="sph", nugget=0.0, sill=1.0, a_major=200.0)
         k.set_grid(coord=coord)
         k.set_search(ivar=1)
         k.solve()

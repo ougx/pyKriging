@@ -212,20 +212,31 @@ contains
   !
   ! Parameters
   !   ivar, jvar : variable indices, 1-based
-  !   spec       : null-terminated variogram spec string:
-  !                "vtype nugget sill a_minor1 a_major a_minor2 az dip plunge"
-  !                vtype: sph exp gau pow lin hol bsq cir
+  !   vtype      : null-terminated variogram type: sph exp gau pow lin hol bsq cir nug
+  !   nugget     : nugget contribution of this structure
+  !   sill       : partial sill
+  !   a_major    : range along principal direction
+  !   a_minor1   : range along first minor direction
+  !   a_minor2   : range along second minor direction
+  !   azimuth, dip, plunge : rotation angles in degrees
   !=============================================================================
-  subroutine krige_set_vgm(handle, ivar, jvar, spec) &
+  subroutine krige_set_vgm(handle, ivar, jvar, vtype, &
+                            nugget, sill, a_major, a_minor1, a_minor2, &
+                            azimuth, dip, plunge) &
       bind(C, name='krige_set_vgm')
 
     integer(c_intptr_t), intent(in), value :: handle
     integer(c_int),      intent(in), value :: ivar, jvar
-    character(kind=c_char), intent(in) :: spec(*)
+    character(kind=c_char), intent(in) :: vtype(*)
+    real(c_double), intent(in), value :: nugget, sill, a_major, a_minor1, a_minor2
+    real(c_double), intent(in), value :: azimuth, dip, plunge
 
     type(t_kriging), pointer :: obj
     call get_obj(handle, obj)
-    call obj%set_vgm(int(ivar), int(jvar), c2fstr(spec))
+    call obj%set_vgm(int(ivar), int(jvar), c2fstr(vtype), &
+                     real(nugget), real(sill), real(a_major), &
+                     real(a_minor1), real(a_minor2), &
+                     real(azimuth), real(dip), real(plunge))
   end subroutine krige_set_vgm
 
   !=============================================================================

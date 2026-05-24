@@ -56,7 +56,7 @@ program sparks
   real, allocatable :: rangescale(:), localnugget(:)
   real, allocatable :: samples(:, :)                           ! (nsim, nblock) — passed to set_sim
 
-  ! variogram spec strings — built from CLI flags or namelist, passed to krig%set_vgm
+  ! raw 4-token CLI variogram specs: "type range sill nugget"
   character(256)  :: vgm_spec1(99), vgm_spec2(99), vgm_specc(99)
   ! rotation/anisotropy and flags
   real            :: ang1, ang2, ang3, anis1, anis2
@@ -227,10 +227,8 @@ program sparks
       case ("bs"); read (optarg, *) blocksize(:ndim)
       case ("md"); read (optarg, *) maxdist1, maxdist2
 
-        ! Variogram specs: store as strings; pass to krig%set_vgm after init.
-        ! Format expected by t_kriging%set_vgm:
-        !   "vtype nugget sill a_major a_minor1 a_minor2 azimuth dip plunge"
-        ! The CLI uses four tokens: type nugget sill range.
+        ! Variogram specs: store CLI strings; parsed and forwarded by set_vgm_().
+        ! CLI format: "type range sill nugget"
       case ("v1")
         nvgm1 = nvgm1 + 1
         vgm_spec1(nvgm1) = adjustl(trim(optarg))
@@ -459,35 +457,35 @@ contains
   ! Data reading helpers
   ! ===========================================================================
 
-  ! Expand a 4-token CLI variogram spec (type nugget sill range) into the
-  ! 9-token spec expected by krig%set_vgm:
-  !   type nugget sill a_major a_minor1 a_minor2 azimuth dip plunge
-  ! Minor semi-axes are derived from the global anisotropy ratios (anis1, anis2).
-  function to_fullvgm(spec) result(fullvgm)
+  ! Parse a 4-token CLI variogram spec ("type range sill nugget") and register
+  ! it with krig%set_vgm.  Minor semi-axes come from the global anis1/anis2
+  ! ratios; rotation angles from ang1/ang2/ang3.
+  subroutine apply_vgm_(ivar, jvar, spec)
+    integer,      intent(in) :: ivar, jvar
     character(*), intent(in) :: spec
-    character(1024)          :: fullvgm
-    ! local
-    character(24)            :: vtype
-    real                     :: sill, nugget, a_major, a_minor1, a_minor2
+    character(24) :: vtype
+    real          :: nugget, sill, a_major, a_minor1, a_minor2
 
-    read (spec, *) vtype, a_major, sill, nugget
-    a_minor1 = a_major*anis1; a_minor2 = a_major*anis2
-    write (fullvgm, *) vtype(1:3), nugget, sill, a_major, a_minor1, a_minor2, ang1, ang2, ang3
-  end function to_fullvgm
+    read(spec, *) vtype, a_major, sill, nugget
+    a_minor1 = a_major * anis1
+    a_minor2 = a_major * anis2
+    call krig%set_vgm(ivar=ivar, jvar=jvar, vtype=trim(vtype), &
+                      nugget=nugget, sill=sill, &
+                      a_major=a_major, a_minor1=a_minor1, a_minor2=a_minor2, &
+                      azimuth=ang1, dip=ang2, plunge=ang3)
+  end subroutine apply_vgm_
 
   subroutine set_vgm_()
-    character(1024) :: spec   ! unused; kept for potential future debug use
-
     ! Registration order matters: primary auto (1,1), cross (1,2), secondary auto (2,2).
     if (verbose) print *, 'Setting variograms'
     do ii = 1, nvgm1
-      call krig%set_vgm(ivar=1, jvar=1, spec=to_fullvgm(vgm_spec1(ii)))
+      call apply_vgm_(1, 1, vgm_spec1(ii))
     end do
     do ii = 1, nvgmc
-      call krig%set_vgm(ivar=1, jvar=2, spec=to_fullvgm(vgm_specc(ii)))   ! cross-variogram
+      call apply_vgm_(1, 2, vgm_specc(ii))   ! cross-variogram
     end do
     do ii = 1, nvgm2
-      call krig%set_vgm(ivar=2, jvar=2, spec=to_fullvgm(vgm_spec2(ii)))
+      call apply_vgm_(2, 2, vgm_spec2(ii))
     end do
   end subroutine set_vgm_
 

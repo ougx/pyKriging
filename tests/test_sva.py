@@ -19,7 +19,7 @@ import os
 from pykriging import ordinary_kriging
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "test_data")
-_VGM = "sph 0.0 0.12 5000.0 5000.0 5000.0 0.0 0.0 0.0"
+_VGM = dict(vtype="sph", nugget=0.0, sill=0.12, a_major=5000.0)
 _NMAX = 20
 
 
