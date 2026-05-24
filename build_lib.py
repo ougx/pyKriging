@@ -31,6 +31,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 SOURCES = [
     "common.f90",
+    "kriging_err.f90",         # must precede variogram (variogram uses kriging_error)
     "utils.F90",
     "progress_bar.F90",
     "rotation.f90",
@@ -39,7 +40,6 @@ SOURCES = [
     "gaussian_quadrature.f90",
     "lapack.f",
     "solver.f90",
-    "kriging_err.f90",
     "kriging.F90",
     "kriging_capi.f90",
 ]
@@ -72,28 +72,41 @@ def _intel_flags(opt_win, opt_linux, debug_win, debug_linux, shared_win, shared_
 FLAGS = {
     "gfortran": {
         "release": ["-O2", "-fdefault-real-8", "-fopenmp", "-cpp", "-fbacktrace", "-ffree-line-length-none"],
-        "debug": ["-O0", "-g", "-fdefault-real-8", "-fopenmp", "-Wall", "-fcheck=all", "-fbacktrace", "-cpp", "-ffree-line-length-none"],
+        "debug": ["-O0", "-g", "-fdefault-real-8", "-fopenmp", "-Wall", "-fcheck=all", "-fbacktrace", "-cpp", "-DDEBUG", "-ffree-line-length-none"],
         "shared": ["-shared", "-fPIC"],
         "implib": [],
     },
     "ifx": _intel_flags(
         opt_win   = ["/O2", "/real-size:64", "/Qopenmp", "/heap-arrays:0", "/traceback", "/fpp"],
         opt_linux = ["-O2", "-real-size:64", "-qopenmp", "-traceback", "-fpp"],
-        debug_win = ["/Od", "/debug:full", "/real-size:64", "/Qopenmp", "/heap-arrays:0", "/traceback", "/warn:all", "/fpp", "/check:all"],
-        debug_linux=["-O0", "-g", "-real-size:64", "-qopenmp", "-traceback", "-fpp", "-warn all", "-check all"],
-        shared_win = ["/dll", "/libs:dll"],
-        shared_linux = ["-shared", "-fPIC"]
-    ),
-    "ifort": _intel_flags(
-        # Classic ifort matches ifx flag syntax exactly on Windows/Linux
-        opt_win   = ["/O2", "/real-size:64", "/Qopenmp", "/heap-arrays:0", "/traceback", "/fpp"],
-        opt_linux = ["-O2", "-real-size:64", "-qopenmp", "-traceback", "-fpp"],
-        debug_win = ["/Od", "/debug:full", "/real-size:64", "/Qopenmp", "/heap-arrays:0", "/traceback", "/warn:all", "/fpp", "/check:all"],
-        debug_linux=["-O0", "-g", "-real-size:64", "-qopenmp", "-traceback", "-fpp", "-warn all", "-check all"],
+        debug_win = ["/Od", "/debug:full", "/real-size:64", "/Qopenmp", "/heap-arrays:0", "/traceback", "/warn:all", "/DDEBUG", "/fpp", "/check:all"],
+        debug_linux=["-O0", "-g", "-real-size:64", "-qopenmp", "-traceback", "-fpp", "-warn all", "-DDEBUG", "-check all"],
         shared_win = ["/dll", "/libs:dll"],
         shared_linux = ["-shared", "-fPIC"]
     ),
 }
+FLAGS["ifort"] = FLAGS["ifx"]
+
+def _module_flags(compiler: str, mod_dir: str) -> list:
+    """Return the flags that set the Fortran module output and search directory.
+
+    gfortran  : -J <dir>  -I <dir>   (two tokens each, space-separated)
+    ifx/ifort : /module:<dir>  /I<dir>   (Windows, single token, no space)
+               -module <dir>  -I<dir>    (Linux/macOS)
+
+    mod_dir should be a build directory (e.g. build/libkriging) so that
+    generated .mod files stay out of the source tree.
+    """
+    if compiler == "gfortran":
+        return ["-J", mod_dir, "-I", mod_dir]
+    elif compiler in ("ifx", "ifort"):
+        if _ON_WINDOWS:
+            # Single-token form so subprocess quoting handles spaces in path
+            return [f"/module:{mod_dir}", f"/I{mod_dir}"]
+        else:
+            return ["-module", mod_dir, f"-I{mod_dir}"]
+    else:
+        return ["-J", mod_dir, "-I", mod_dir]
 
 
 def detect_compiler():
@@ -153,10 +166,20 @@ def _write_def_file(path: Path) -> None:
     print(f"Generated: {path}")
 
 
-def build(compiler: str, arg: argparse.ArgumentParser, fortran_dir: Path, out_dir: Path):
+
+def _clean_mod_files(mod_dir: Path) -> None:
+    """Delete stale .mod files from the build directory before recompiling."""
+    for f in mod_dir.glob("*.mod"):
+        os.remove(f)
+        print("Deleted: ", f)
+
+
+def build(compiler: str, arg: argparse.ArgumentParser, fortran_dir: Path,
+          out_dir: Path, mod_dir: Path):
     flag_set = FLAGS.get(compiler)
     if flag_set is None:
         raise ValueError(f"Unknown compiler {compiler!r}. Choose: gfortran, ifx, ifort")
+    _clean_mod_files(mod_dir)
     if arg.no_openmp:
         openmp_flags = {
             "gfortran": ["fopenmp"],
@@ -188,6 +211,7 @@ def build(compiler: str, arg: argparse.ArgumentParser, fortran_dir: Path, out_di
         [compiler]
         + flag_set[arg.opt]
         + flag_set["shared"]
+        + _module_flags(compiler, str(mod_dir))
         + sources
         + ["-o", str(out_path)]
         + extra
@@ -204,7 +228,8 @@ def build(compiler: str, arg: argparse.ArgumentParser, fortran_dir: Path, out_di
         print(f"\nCompilation failed (exit code {result.returncode})")
         sys.exit(result.returncode)
 
-    print(f"\nSuccess: {out_path}")
+    else:
+        print(f"\nSuccess: {out_path}")
     return out_path
 
 
@@ -222,15 +247,17 @@ def main():
     print(f"Compiler: {compiler}")
     print(f"Mode:     {args.opt}")
 
-    root       = Path(__file__).parent
+    root        = Path(__file__).parent
     fortran_dir = root / "src" / "libkriging"
     out_dir     = root / "src" / "pykriging"
+    mod_dir     = root / "build" / "libkriging"
 
     if not fortran_dir.exists():
         raise FileNotFoundError(f"Fortran source directory not found: {fortran_dir}")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    build(compiler, args, fortran_dir, out_dir)
+    mod_dir.mkdir(parents=True, exist_ok=True)
+    build(compiler, args, fortran_dir, out_dir, mod_dir)
 
 
 if __name__ == "__main__":

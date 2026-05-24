@@ -19,10 +19,10 @@ from pykriging import Kriging, ordinary_kriging
 
 
 # Variogram for obs_simple: pure nugget (isotropic, no spatial structure)
-_VGM_SIMPLE = "sph 0.01 0.09 100.0 100.0 100.0 0.0 0.0 0.0"
+_VGM_SIMPLE = dict(vtype="sph", nugget=0.01, sill=0.09, a_major=100.0)
 
 # Variogram fitted to pc2d dataset
-_VGM_PC2D   = "sph 0.0 0.12 5000.0 5000.0 5000.0 0.0 0.0 0.0"
+_VGM_PC2D   = dict(vtype="sph", nugget=0.0, sill=0.12, a_major=5000.0)
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ class TestKrigingClass:
         coord, value = simple_obs
         k = Kriging(ndim=2, nvar=1)
         k.set_obs(ivar=1, coord=coord, value=value, nmax=5)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_SIMPLE)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_SIMPLE)
         k.set_grid(coord=simple_grid)
         k.set_search(ivar=1)
         k.solve()
@@ -50,7 +50,7 @@ class TestKrigingClass:
         coord, value = simple_obs
         k = Kriging(ndim=2, nvar=1)
         k.set_obs(ivar=1, coord=coord, value=value, nmax=5)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_SIMPLE)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_SIMPLE)
         k.set_grid(coord=simple_grid)
         k.set_search(ivar=1)
         k.solve()
@@ -64,7 +64,7 @@ class TestKrigingClass:
         grid_at_obs = coord[[0]]
         k = Kriging(ndim=2, nvar=1)
         k.set_obs(ivar=1, coord=coord, value=value, nmax=5)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_SIMPLE)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_SIMPLE)
         k.set_grid(coord=grid_at_obs)
         k.set_search(ivar=1)
         k.solve()
@@ -80,25 +80,19 @@ class TestKrigingClass:
         const_value = 3.14 * np.ones(coord.shape[0])
         k = Kriging(ndim=2, nvar=1)
         k.set_obs(ivar=1, coord=coord, value=const_value, nmax=5)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_SIMPLE)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_SIMPLE)
         k.set_grid(coord=simple_grid)
         k.set_search(ivar=1)
         k.solve()
         est, _ = k.get_results()
         assert est == pytest.approx(3.14, rel=1e-4)
 
-    def test_repr(self, simple_obs, simple_grid):
-        coord, value = simple_obs
-        k = Kriging(ndim=2, nvar=1)
-        assert "Kriging" in repr(k)
-        assert "ndim=2" in repr(k)
-
     def test_destructor_does_not_crash(self, simple_obs, simple_grid):
         """__del__ must not crash even if solve was never called."""
         coord, value = simple_obs
         k = Kriging(ndim=2, nvar=1)
         k.set_obs(ivar=1, coord=coord, value=value)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_SIMPLE)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_SIMPLE)
         del k   # should not raise
 
 

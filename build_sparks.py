@@ -81,15 +81,8 @@ FLAGS = {
         shared_win = ['/nologo', '/MT'],
         shared_linux = ['-nologo', '-static', '-MT']
     ),
-    "ifort": _intel_flags(
-        opt_win = ["/O2", "/real-size:64", "/Qopenmp", "/heap-arrays:0", "/traceback", "/fpp"],
-        opt_linux = ["-O2", "-real-size:64", "-qopenmp", "-traceback", "-fpp"],
-        debug_win = ["/Od", "/debug:full", "/real-size:64", "/Qopenmp", "/heap-arrays:0", "/traceback", "/warn:all", "/fpp", "/check:all"],
-        debug_linux=["-O0", "-g", "-real-size:64", "-qopenmp", "-traceback", "-fpp", "-warn all", "-check all"],
-        shared_win = ['/nologo', '/MT'],
-        shared_linux = ['-nologo', '-static', '-MT']
-    ),
 }
+FLAGS["ifort"] = FLAGS["ifx"]
 
 def detect_compiler():
     for compiler in ("ifx", "gfortran", "ifort"):
@@ -132,7 +125,30 @@ def get_define_flag(compiler: str, name: str, value: str) -> str:
     prefix = "/" if (_ON_WINDOWS and compiler in ("ifx", "ifort")) else "-"
     return f'{prefix}D{name}="{value}"'
 
-def build(compiler: str, arg: argparse.ArgumentParser, fortran_dir: Path, out_dir: Path):
+
+def _module_flags(compiler: str, mod_dir: str) -> list:
+    """Return the flags that direct .mod file output and search to mod_dir.
+
+    gfortran  : -J <dir>  -I <dir>
+    ifx/ifort : /module:<dir>  /I<dir>   (Windows)
+               -module <dir>  -I<dir>    (Linux/macOS)
+
+    mod_dir should be a build directory (e.g. build/sparks) so that generated
+    .mod files stay out of the source tree.
+    """
+    if compiler == "gfortran":
+        return ["-J", mod_dir, "-I", mod_dir]
+    elif compiler in ("ifx", "ifort"):
+        if _ON_WINDOWS:
+            return [f"/module:{mod_dir}", f"/I{mod_dir}"]
+        else:
+            return ["-module", mod_dir, f"-I{mod_dir}"]
+    else:
+        return ["-J", mod_dir, "-I", mod_dir]
+
+
+def build(compiler: str, arg: argparse.ArgumentParser, fortran_dir: Path,
+          out_dir: Path, mod_dir: Path):
     flag_set = FLAGS.get(compiler)
     if flag_set is None:
         raise ValueError(f"Unknown compiler {compiler!r}. Choose: gfortran, ifx, ifort")
@@ -160,7 +176,14 @@ def build(compiler: str, arg: argparse.ArgumentParser, fortran_dir: Path, out_di
     ]
 
     cmd = (
-        [compiler] + flag_set[arg.opt] + flag_set["shared"] + defines + sources + ["-o", str(out_path)] + flag_set["implib"]
+        [compiler]
+        + flag_set[arg.opt]
+        + flag_set["shared"]
+        + _module_flags(compiler, str(mod_dir))
+        + defines
+        + sources
+        + ["-o", str(out_path)]
+        + flag_set["implib"]
     )
 
     print("Compiling with:")
@@ -176,7 +199,7 @@ def build(compiler: str, arg: argparse.ArgumentParser, fortran_dir: Path, out_di
     return out_path
 
 def main():
-    parser = argparse.ArgumentParser(description="Build the pykriging Fortran library.")
+    parser = argparse.ArgumentParser(description="Build the SPARKS executable.")
     parser.add_argument("--compiler", default=None, help="Fortran compiler: gfortran, ifx, ifort (default: auto-detect)")
     parser.add_argument("--opt", default="release", choices=["release", "debug"], help="Optimisation level (default: release)")
     parser.add_argument("--no-openmp", action="store_true", help="Disable OpenMP parallelization")
@@ -186,15 +209,17 @@ def main():
     print(f"Compiler: {compiler}")
     print(f"Mode: {args.opt}")
 
-    root = Path(__file__).parent
+    root        = Path(__file__).parent
     fortran_dir = root / "src" / "libkriging"
-    out_dir = root / "bin"
+    out_dir     = root / "bin"
+    mod_dir     = root / "build" / "sparks"
 
     if not fortran_dir.exists():
         raise FileNotFoundError(f"Fortran source directory not found: {fortran_dir}")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    build(compiler, args, fortran_dir, out_dir)
+    mod_dir.mkdir(parents=True, exist_ok=True)
+    build(compiler, args, fortran_dir, out_dir, mod_dir)
 
 if __name__ == "__main__":
     main()

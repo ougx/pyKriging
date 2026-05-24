@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from pykriging import Kriging, sequential_gaussian_simulation
 
-_VGM_PC2D = "sph 0.0 0.12 5000.0 5000.0 5000.0 0.0 0.0 0.0"
+_VGM_PC2D = dict(vtype="sph", nugget=0.0, sill=0.12, a_major=5000.0)
 
 
 class TestSGSIM:
@@ -103,7 +103,7 @@ class TestSGSIM:
 
         k = Kriging(ndim=2, nvar=1, nsim=1)
         k.set_obs(ivar=1, coord=coord, value=value, nmax=20)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_PC2D)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_PC2D)
         k.set_grid(coord=grid_coord)
         k.set_sim(randpath=path, sample=sample)
         k.set_search(ivar=1)

@@ -118,7 +118,14 @@ contains
     real(c_double),      intent(in), value :: sk_mean
 
     type(t_kriging), pointer :: obj
+    !-- Local copy avoids an implicit array temporary for the 'bounds' argument
+    !   (Intel warning 406: "array temporary created for argument #N").
+    !   real(c_double) and the default real kind are both 8-byte with the
+    !   compiler flags used (/real-size:64 / -fdefault-real-8), so the
+    !   assignment is lossless.
+    real :: fbounds(2)
     call get_obj(handle, obj)
+    fbounds = real(bounds)
 
     call obj%initialize( &
       ndim               = int(ndim), &
@@ -135,7 +142,7 @@ contains
       neglect_error      = l(neglect_error), &
       verbose            = l(verbose), &
       weight_file        = c2fstr(weight_file), &
-      bounds             = real(bounds), &
+      bounds             = fbounds, &
       sk_mean            = real(sk_mean), &
       seed               = int(seed))
   end subroutine krige_initialize
@@ -212,20 +219,31 @@ contains
   !
   ! Parameters
   !   ivar, jvar : variable indices, 1-based
-  !   spec       : null-terminated variogram spec string:
-  !                "vtype nugget sill a_minor1 a_major a_minor2 az dip plunge"
-  !                vtype: sph exp gau pow lin hol bsq cir
+  !   vtype      : null-terminated variogram type: sph exp gau pow lin hol bsq cir nug
+  !   nugget     : nugget contribution of this structure
+  !   sill       : partial sill
+  !   a_major    : range along principal direction
+  !   a_minor1   : range along first minor direction
+  !   a_minor2   : range along second minor direction
+  !   azimuth, dip, plunge : rotation angles in degrees
   !=============================================================================
-  subroutine krige_set_vgm(handle, ivar, jvar, spec) &
+  subroutine krige_set_vgm(handle, ivar, jvar, vtype, &
+                            nugget, sill, a_major, a_minor1, a_minor2, &
+                            azimuth, dip, plunge) &
       bind(C, name='krige_set_vgm')
 
     integer(c_intptr_t), intent(in), value :: handle
     integer(c_int),      intent(in), value :: ivar, jvar
-    character(kind=c_char), intent(in) :: spec(*)
+    character(kind=c_char), intent(in) :: vtype(*)
+    real(c_double), intent(in), value :: nugget, sill, a_major, a_minor1, a_minor2
+    real(c_double), intent(in), value :: azimuth, dip, plunge
 
     type(t_kriging), pointer :: obj
     call get_obj(handle, obj)
-    call obj%set_vgm(int(ivar), int(jvar), c2fstr(spec))
+    call obj%set_vgm(int(ivar), int(jvar), c2fstr(vtype), &
+                     real(nugget), real(sill), real(a_major), &
+                     real(a_minor1), real(a_minor2), &
+                     real(azimuth), real(dip), real(plunge))
   end subroutine krige_set_vgm
 
   !=============================================================================
@@ -475,6 +493,15 @@ contains
     call get_obj(handle, obj)
     out = real(obj%block%variance(1:nblocks), c_double)
   end subroutine krige_get_variance
+
+  !-- Return a string representation of the kriging object.
+  function krige_to_str(self) result(ptr) bind(C, name='krige_to_str')
+    type(t_kriging), intent(in) :: self
+    type(c_ptr) :: ptr
+    character(len=:), allocatable :: info
+    call self%update_info()
+    ptr = c_loc(self%krige_info(1))
+  end function
 
   !=============================================================================
   ! Internal helpers (private to this module)

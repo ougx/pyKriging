@@ -15,7 +15,7 @@ Then use this module:
 
     k = Kriging(ndim=2, nvar=1)
     k.set_obs(ivar=1, coord=coord, value=value, nmax=20)
-    k.set_vgm(ivar=1, jvar=1, spec="sph 0 1.0 1000 500 500 0 0 0") # vtype nugget sill a_major a_minor1 a_minor2 azimuth dip plunge
+    k.set_vgm(ivar=1, jvar=1, vtype="sph", nugget=0, sill=1.0, a_major=1000, a_minor1=500, a_minor2=500)
     k.set_grid(coord=grid_coord)
     k.set_search(ivar=1)
     k.solve()
@@ -28,6 +28,27 @@ import os
 import numpy as np
 from typing import Optional
 import random
+
+# ---------------------------------------------------------------------------
+# Intel OpenMP runtime guards (Windows + ifx/ifort builds)
+#
+# KMP_DUPLICATE_LIB_OK=TRUE  — suppresses the crash that occurs when two
+#   OpenMP runtimes (e.g. Intel libiomp5md.dll and GNU libgomp.dll from
+#   a pip-installed numpy/scipy) are both loaded into the same process.
+#   Without this, the first !$OMP PARALLEL region triggers an access
+#   violation that cascades across all OpenMP threads.
+#
+# KMP_STACKSIZE — each Intel OpenMP worker thread gets its own stack.
+#   Default is 4 MB on Windows.  The largest automatic array in the hot
+#   path is L(nmax, nmax) in kriging_solve: L(1000,1000) ≈ 4 MB, which
+#   would overflow the 4 MB default.  Setting 64 MB is safe for any
+#   realistic nmax.  Users can override this via the environment variable
+#   before importing pykriging.
+# ---------------------------------------------------------------------------
+if os.name == "nt":  # Windows only
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+    os.environ.setdefault("KMP_STACKSIZE", "64m")
+
 # ---------------------------------------------------------------------------
 # Load the shared library (platform-aware)
 # ---------------------------------------------------------------------------
@@ -36,6 +57,12 @@ def _load_lib():
     import sys as _sys
     if _sys.platform == "win32":
         names = ["kriging.dll"]
+        # Prepend the package directory to PATH so that any Intel runtime DLLs
+        # placed alongside kriging.dll (e.g. libcaf_ifx.dll, libiomp5md.dll)
+        # are found by Windows when they are dynamically loaded at runtime.
+        # This is needed because LoadLibraryW (used by libiomp5md.dll to load
+        # libcaf_ifx.dll at runtime) searches PATH, not the DLL's own directory.
+        os.environ['PATH'] = base + os.pathsep + os.environ.get('PATH', '')
     elif _sys.platform == "darwin":
         names = ["libkriging.dylib"]
     else:
@@ -57,6 +84,7 @@ _lib = _load_lib()
 _c_int    = ctypes.c_int
 _c_double = ctypes.c_double
 _c_char_p = ctypes.c_char_p
+_ptr_void = ctypes.c_void_p
 _ptr_int  = ctypes.POINTER(ctypes.c_int)
 _ptr_dbl  = ctypes.POINTER(ctypes.c_double)
 
@@ -89,7 +117,14 @@ _krige_set_obs_drift = _cfun("krige_set_obs_drift", [
     _c_int, _c_int, _c_int,                      # ivar, ndrift_c, nobs
     _ptr_dbl,                                    # drift[ndrift_c, nobs]
 ])
-_krige_set_vgm     = _cfun("krige_set_vgm",  [ctypes.c_int64, _c_int, _c_int, _c_char_p])
+_krige_set_vgm     = _cfun("krige_set_vgm",  [
+    ctypes.c_int64,                              # handle
+    _c_int, _c_int,                              # ivar, jvar
+    _c_char_p,                                   # vtype (null-terminated)
+    _c_double, _c_double,                        # nugget, sill
+    _c_double, _c_double, _c_double,             # a_major, a_minor1, a_minor2
+    _c_double, _c_double, _c_double,             # azimuth, dip, plunge
+])
 _krige_set_grid    = _cfun("krige_set_grid", [
     ctypes.c_int64,                              # handle
     _c_int, _c_int, _ptr_dbl,                   # ngrid, ndim_c, coord
@@ -119,10 +154,13 @@ _krige_set_search  = _cfun("krige_set_search", [
     _c_double, _c_double, _c_double, _c_double, _c_double,  # anis1, anis2, az, dip, plunge
 ])
 _krige_solve       = _cfun("krige_solve",       [ctypes.c_int64])
+# _krige_print       = _cfun("krige_print",       [ctypes.c_int64])
 _krige_get_nblocks = _cfun("krige_get_nblocks", [ctypes.c_int64, _ptr_int])
 _krige_get_nsim    = _cfun("krige_get_nsim",    [ctypes.c_int64, _ptr_int])
 _krige_get_estimate= _cfun("krige_get_estimate",[ctypes.c_int64, _c_int, _c_int, _ptr_dbl])
 _krige_get_variance= _cfun("krige_get_variance",[ctypes.c_int64, _c_int, _ptr_dbl])
+
+_krige_to_str      = _cfun("krige_to_str"   , [ctypes.c_int64], _ptr_void)
 
 _krige_get_max_threads = _cfun("krige_get_max_threads", [_ptr_int])
 _krige_get_num_threads = _cfun("krige_get_num_threads", [_ptr_int])
@@ -241,7 +279,7 @@ class Kriging:
     ----------------
     >>> k = Kriging(ndim=2, nvar=1)
     >>> k.set_obs(ivar=1, coord=obs_coord, value=obs_value, nmax=20)
-    >>> k.set_vgm(ivar=1, jvar=1, spec="sph 0 1.0 1000 500 50 0 0 0") # vtype nugget sill a_major a_minor1 a_minor2 azimuth dip plunge
+    >>> k.set_vgm(ivar=1, jvar=1, vtype="sph", nugget=0, sill=1.0, a_major=1000, a_minor1=500, a_minor2=50)
     >>> k.set_grid(coord=grid_coord)
     >>> k.set_search(ivar=1)
     >>> k.solve()
@@ -323,7 +361,7 @@ class Kriging:
 
         # build bounds array: Fortran default is [-huge, +huge]; replicate that here
         import sys
-        _huge = sys.float_info.max
+        _huge = sys.float_info.max * 1e3
         c_bounds = _farray(bounds if bounds is not None else [-_huge, _huge])
         seed = seed or random.randint(0, 2**32-1)
         # set random seed in python
@@ -455,9 +493,17 @@ class Kriging:
         )
 
     # ------------------------------------------------------------------
-    def set_vgm(self, ivar: int, jvar: int, spec: "str | list[str]"):
+    def set_vgm(
+        self, ivar: int, jvar: int, vtype: str,
+        nugget: float = 0.0, sill: float = 1.0,
+        a_major: float = 1.0,
+        a_minor1: Optional[float] = None,
+        a_minor2: Optional[float] = None,
+        azimuth: float = 0.0, dip: float = 0.0, plunge: float = 0.0,
+    ):
         """
-        Add one or more nested variogram structures for the (ivar, jvar) pair.
+        Add one nested variogram structure for the (ivar, jvar) pair.
+        Call multiple times to build a nested (multi-structure) model.
 
         Parameters
         ----------
@@ -465,27 +511,39 @@ class Kriging:
             Variable indices (1-based). Use ivar=jvar for auto-variograms,
             ivar≠jvar for cross-variograms. The LMC constraint
             b12² ≤ b11 × b22 must be satisfied for each nested structure.
-        spec : str or list of str
-            One variogram specification string, or a list of strings for
-            nested structures.  Each string is space-separated:
-            ``"vtype nugget sill a_major a_minor1 a_minor2 azimuth dip plunge"``
-
-            vtype is one of: sph, exp, gau, pow, lin, hol, bsq, cir.
+        vtype : str
+            Variogram type: one of ``sph``, ``exp``, ``gau``, ``pow``,
+            ``lin``, ``hol``, ``bsq``, ``cir``, ``nug``.
+        nugget : float
+            Nugget contribution of this structure (default 0).
+        sill : float
+            Partial sill of this structure (default 1).
+        a_major : float
+            Range along the major axis (default 1).
+        a_minor1 : float, optional
+            Range along the first minor axis. Defaults to ``a_major``
+            (isotropic in the horizontal plane).
+        a_minor2 : float, optional
+            Range along the second minor axis. Defaults to ``a_minor1``.
+        azimuth, dip, plunge : float
+            Rotation angles in degrees (default 0).
 
         Example
         -------
-        >>> k.set_vgm(1, 1, "sph 0.0 1.0 500.0 500.0 500.0 0.0 0.0 0.0")
-        >>> k.set_vgm(1, 1, [
-        ...     "nug 0.1 0.0 1.0 1.0 1.0 0.0 0.0 0.0",
-        ...     "sph 0.0 0.9 500.0 500.0 500.0 0.0 0.0 0.0",
-        ... ])
+        >>> k.set_vgm(1, 1, vtype="sph", nugget=0.0, sill=1.0, a_major=500.0)
+        >>> k.set_vgm(1, 1, vtype="nug", nugget=0.1, sill=0.0, a_major=1.0)
+        >>> k.set_vgm(1, 1, vtype="sph", nugget=0.0, sill=0.9, a_major=500.0)
         """
-        specs = [spec] if isinstance(spec, str) else list(spec)
-        for s in specs:
-            _krige_set_vgm(_h(self._handle),
-                _c_int(ivar), _c_int(jvar),
-                s.encode("utf-8"),
-            )
+        if a_minor1 is None:
+            a_minor1 = a_major
+        if a_minor2 is None:
+            a_minor2 = a_minor1
+        _krige_set_vgm(_h(self._handle),
+            _c_int(ivar), _c_int(jvar),
+            vtype.encode("utf-8"),
+            nugget, sill, a_major, a_minor1, a_minor2,
+            azimuth, dip, plunge,
+        )
 
     # ------------------------------------------------------------------
     def set_grid(
@@ -770,11 +828,19 @@ class Kriging:
             _krige_destroy(ctypes.byref(_tmp))
             self._handle = 0
 
+    def get_info(self):
+        ptr = _krige_to_str(_h(self._handle))
+        if not ptr:
+            return ""
+        return ctypes.cast(ptr, ctypes.c_char_p).value.decode("utf-8", errors="ignore")
+
     # ------------------------------------------------------------------
     def __repr__(self):
-        return (f"Kriging(ndim={self.ndim}, nvar={self.nvar}, "
-                f"ndrift={self.ndrift}, nsim={self.nsim})")
+        return f"<Kriging at {self._handle}>"
 
+    # ------------------------------------------------------------------
+    def __str__(self):
+        return self.get_info()
 
 # ---------------------------------------------------------------------------
 # Convenience functions
@@ -784,7 +850,7 @@ def ordinary_kriging(
     obs_coord: np.ndarray,
     obs_value: np.ndarray,
     grid_coord: np.ndarray,
-    vgm_spec: "str | list[str]",
+    vgm_spec: "dict | list[dict]",
     nmax: int = 20,
     maxdist: Optional[float] = None,
     search_anis1: float = 1.0,
@@ -804,8 +870,11 @@ def ordinary_kriging(
         Observation values.
     grid_coord : ndarray, shape **(ngrid, ndim)**
         Grid coordinates to estimate.
-    variogram_spec : str
-        Variogram specification string passed to :meth:`Kriging.set_vgm`.
+    vgm_spec : dict or list of dict
+        One variogram structure dict, or a list of dicts for nested models.
+        Each dict is passed as keyword arguments to :meth:`Kriging.set_vgm`
+        (keys: ``vtype``, ``nugget``, ``sill``, ``a_major``, and optionally
+        ``a_minor1``, ``a_minor2``, ``azimuth``, ``dip``, ``plunge``).
     nmax : int
         Maximum number of neighbours.
     maxdist : float, optional
@@ -824,7 +893,7 @@ def ordinary_kriging(
     -------
     >>> est, var = ordinary_kriging(
     ...     obs_coord, obs_value, grid_coord,
-    ...     variogram_spec="sph 100 900 500 1000 500 0 0 0",
+    ...     vgm_spec=dict(vtype="sph", nugget=100, sill=900, a_major=1000, a_minor1=500),
     ...     nmax=20)
     """
     assert obs_coord.ndim == 2 and obs_coord.shape[0] >= obs_coord.shape[1], (
@@ -838,7 +907,8 @@ def ordinary_kriging(
     k = Kriging(ndim=ndim, nvar=1)
     k.set_obs(ivar=1, coord=obs_coord, value=obs_value,
               nmax=nmax, maxdist=maxdist)
-    k.set_vgm(ivar=1, jvar=1, spec=vgm_spec)
+    for spec in ([vgm_spec] if isinstance(vgm_spec, dict) else list(vgm_spec)):
+        k.set_vgm(ivar=1, jvar=1, **spec)
     k.set_grid(coord=grid_coord, rangescale=rangescale, localnugget=localnugget)
     k.set_search(ivar=1, anis1=search_anis1, anis2=search_anis2,
                  azimuth=search_azimuth)
@@ -868,9 +938,10 @@ def cokriging(
     grid_coord : ndarray, shape **(ngrid, ndim)**
         Grid coordinates.
     vgm_spec : dict
-        Mapping (ivar, jvar) -> spec string. Both (i,j) and (j,i) can be
-        provided; if only (i,j) is given, (j,i) will mirror it automatically
-        (handled inside Fortran set_vgm).
+        Mapping ``(ivar, jvar)`` to a variogram dict or list of dicts.
+        Each dict is passed as keyword arguments to :meth:`Kriging.set_vgm`.
+        Both (i,j) and (j,i) can be provided; if only (i,j) is given,
+        (j,i) will mirror it automatically (handled inside Fortran set_vgm).
     nmax : int
         Maximum neighbours per variable.
 
@@ -885,10 +956,10 @@ def cokriging(
     ...     obs_coords=[coord1, coord2],
     ...     obs_values=[val1, val2],
     ...     grid_coord=grid,
-    ...     variogram_specs={
-    ...         (1,1): ("sph 100 900 500 1000 500 0 0 0",),
-    ...         (2,2): ("sph  50 450 500 1000 500 0 0 0",),
-    ...         (1,2): ("sph   0 600 500 1000 500 0 0 0",),
+    ...     vgm_spec={
+    ...         (1,1): dict(vtype="sph", nugget=100, sill=900, a_major=1000, a_minor1=500),
+    ...         (2,2): dict(vtype="sph", nugget=50,  sill=450, a_major=1000, a_minor1=500),
+    ...         (1,2): dict(vtype="sph", nugget=0,   sill=600, a_major=1000, a_minor1=500),
     ...     })
     """
     nvar = len(obs_coords)
@@ -899,7 +970,8 @@ def cokriging(
         k.set_obs(ivar=i, coord=coord, value=value, nmax=nmax)
 
     for (iv, jv), spec in vgm_spec.items():
-        k.set_vgm(ivar=iv, jvar=jv, spec=spec)
+        for s in ([spec] if isinstance(spec, dict) else list(spec)):
+            k.set_vgm(ivar=iv, jvar=jv, **s)
 
     k.set_grid(coord=grid_coord, rangescale=rangescale, localnugget=localnugget)
 
@@ -935,7 +1007,9 @@ def sequential_gaussian_simulation(
         Observation values.
     grid_coord : ndarray, shape **(ngrid, ndim)**
         Grid coordinates.
-    vgm_spec : str
+    vgm_spec : dict or list of dict
+        One or more nested variogram structure dicts, each passed as keyword
+        arguments to :meth:`Kriging.set_vgm`.
     nsim : int
         Number of realisations.
     nmax : int
@@ -953,7 +1027,8 @@ def sequential_gaussian_simulation(
 
     k = Kriging(ndim=ndim, nvar=1, nsim=nsim, seed=seed)
     k.set_obs(ivar=1, coord=obs_coord, value=obs_value, nmax=nmax)
-    k.set_vgm(ivar=1, jvar=1, spec=vgm_spec)
+    for spec in ([vgm_spec] if isinstance(vgm_spec, dict) else list(vgm_spec)):
+        k.set_vgm(ivar=1, jvar=1, **spec)
     k.set_grid(coord=grid_coord, rangescale=rangescale, localnugget=localnugget)
     # set_sim with no args: Python generates random path and N(0,1) samples
     k.set_sim(randpath, sample)

@@ -23,12 +23,12 @@ from pykriging import Kriging, ordinary_kriging
 # Constants
 # ---------------------------------------------------------------------------
 
-_VGM_PC2D = "sph 0.0  0.12 5000.0 5000.0 5000.0 0.0 0.0 0.0"
+_VGM_PC2D = dict(vtype="sph", nugget=0.0,  sill=0.12, a_major=5000.0)
 
 # Two-structure decomposition used by multi-struct tests.
 # _VGM_NUG + _VGM_SPH  →  nugget=0.04, sill=0.08, range=5000
-_VGM_NUG  = "sph 0.04 0.0  5000.0 5000.0 5000.0 0.0 0.0 0.0"
-_VGM_SPH  = "sph 0.0  0.08 5000.0 5000.0 5000.0 0.0 0.0 0.0"
+_VGM_NUG  = dict(vtype="sph", nugget=0.04, sill=0.0,  a_major=5000.0)
+_VGM_SPH  = dict(vtype="sph", nugget=0.0,  sill=0.08, a_major=5000.0)
 
 # Two interior grid points not co-located with any observation
 _INTERIOR_GRID = np.array([[580000.0, 4395000.0],
@@ -42,7 +42,7 @@ _NMAX = 20
 # ---------------------------------------------------------------------------
 
 def _run(coord, value, grid, vgm_spec=(_VGM_PC2D,), nmax=_NMAX, **kw):
-    """Run ordinary kriging; vgm_spec is an iterable of variogram spec strings."""
+    """Run ordinary kriging; vgm_spec is a dict or iterable of dicts."""
     return ordinary_kriging(coord, value, grid, vgm_spec, nmax, **kw)
 
 
@@ -71,7 +71,7 @@ class TestObjectReuse:
 
         # Run 1: all 62 observations
         k.set_obs(ivar=1, coord=coord, value=value, nmax=_NMAX)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_PC2D)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_PC2D)
         k.set_grid(coord=grid)
         k.set_search(ivar=1)
         k.solve()
@@ -79,7 +79,7 @@ class TestObjectReuse:
 
         # Run 2: last 32 observations only
         k.set_obs(ivar=1, coord=coord[30:], value=value[30:], nmax=_NMAX)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_PC2D)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_PC2D)
         k.set_grid(coord=grid)
         k.set_search(ivar=1)
         k.solve()
@@ -95,7 +95,7 @@ class TestObjectReuse:
 
         k = Kriging(ndim=2, nvar=1, verbose=0)
         k.set_obs(ivar=1, coord=coord, value=value, nmax=_NMAX)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_PC2D)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_PC2D)
 
         k.set_grid(coord=_INTERIOR_GRID[:1])
         k.set_search(ivar=1)
@@ -103,7 +103,7 @@ class TestObjectReuse:
         est1, _ = k.get_results()
 
         k.set_obs(ivar=1, coord=coord, value=value, nmax=_NMAX)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_PC2D)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_PC2D)
         k.set_grid(coord=_INTERIOR_GRID[1:])
         k.set_search(ivar=1)
         k.solve()
@@ -121,7 +121,7 @@ class TestObjectReuse:
 
         def _do_run(obs_coord, obs_val):
             k.set_obs(ivar=1, coord=obs_coord, value=obs_val, nmax=_NMAX)
-            k.set_vgm(ivar=1, jvar=1, spec=_VGM_PC2D)
+            k.set_vgm(ivar=1, jvar=1, **_VGM_PC2D)
             k.set_grid(coord=grid)
             k.set_search(ivar=1)
             k.solve()
@@ -147,14 +147,14 @@ class TestObjectReuse:
         k = Kriging(ndim=2, nvar=1, verbose=0)
 
         k.set_obs(ivar=1, coord=coord[:10], value=value[:10], nmax=10)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_PC2D)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_PC2D)
         k.set_grid(coord=grid)
         k.set_search(ivar=1)
         k.solve()
         est_small, _ = k.get_results()
 
         k.set_obs(ivar=1, coord=coord, value=value, nmax=_NMAX)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_PC2D)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_PC2D)
         k.set_grid(coord=grid)
         k.set_search(ivar=1)
         k.solve()
@@ -172,7 +172,7 @@ class TestObjectReuse:
         k = Kriging(ndim=2, nvar=1, verbose=0)
         for sl in [slice(None), slice(30), slice(15, 45)]:
             k.set_obs(ivar=1, coord=coord[sl], value=value[sl], nmax=_NMAX)
-            k.set_vgm(ivar=1, jvar=1, spec=_VGM_PC2D)
+            k.set_vgm(ivar=1, jvar=1, **_VGM_PC2D)
             k.set_grid(coord=grid)
             k.set_search(ivar=1)
             k.solve()
@@ -193,7 +193,7 @@ class TestObjectReuse:
 
         k1 = Kriging(ndim=2, nvar=1, verbose=0)
         k1.set_obs(ivar=1, coord=coord, value=value, nmax=_NMAX)
-        k1.set_vgm(ivar=1, jvar=1, spec=_VGM_PC2D)          # sill = 0.12
+        k1.set_vgm(ivar=1, jvar=1, **_VGM_PC2D)  # sill = 0.12
         k1.set_grid(coord=grid)
         k1.set_search(ivar=1)
         k1.solve()
@@ -201,8 +201,8 @@ class TestObjectReuse:
 
         k2 = Kriging(ndim=2, nvar=1, verbose=0)
         k2.set_obs(ivar=1, coord=coord, value=value, nmax=_NMAX)
-        k2.set_vgm(ivar=1, jvar=1, spec=_VGM_PC2D)          # first call
-        k2.set_vgm(ivar=1, jvar=1, spec=_VGM_PC2D)          # second call → sill = 0.24
+        k2.set_vgm(ivar=1, jvar=1, **_VGM_PC2D)  # first call
+        k2.set_vgm(ivar=1, jvar=1, **_VGM_PC2D)  # second call → sill = 0.24
         k2.set_grid(coord=grid)
         k2.set_search(ivar=1)
         k2.solve()
@@ -229,7 +229,7 @@ class TestCrossValidationMode:
 
         k = Kriging(ndim=2, nvar=1, cross_validation=True)
         k.set_obs(ivar=1, coord=coord, value=value, nmax=15)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_PC2D)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_PC2D)
         k.set_grid_cv()
         k.set_search(ivar=1)
         k.solve()
@@ -245,7 +245,7 @@ class TestCrossValidationMode:
 
         k = Kriging(ndim=2, nvar=1, cross_validation=True)
         k.set_obs(ivar=1, coord=coord, value=value, nmax=20)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_PC2D)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_PC2D)
         k.set_grid_cv()
         k.set_search(ivar=1)
         k.solve()
@@ -279,7 +279,7 @@ class TestCrossValidation:
         coord, value = pc2d_obs
         k = Kriging(ndim=2, nvar=1, cross_validation=True, verbose=0)
         k.set_obs(ivar=1, coord=coord, value=value)   # no nmax limit → matches reference
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_PC2D)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_PC2D)
         k.set_grid_cv()
         k.set_search(ivar=1)
         k.solve()
@@ -349,7 +349,7 @@ class TestCrossValidation:
 
         def _run_cv():
             k.set_obs(ivar=1, coord=coord, value=value)
-            k.set_vgm(ivar=1, jvar=1, spec=_VGM_PC2D)
+            k.set_vgm(ivar=1, jvar=1, **_VGM_PC2D)
             k.set_grid_cv()
             k.set_search(ivar=1)
             k.solve()
@@ -399,7 +399,7 @@ class TestExactMatch:
         k = Kriging(ndim=2, nvar=1, verbose=0)
         k.set_obs(ivar=1, coord=coord, value=value, nmax=_NMAX,
                   variance=np.full(len(value), obs_err))
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_PC2D)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_PC2D)
         k.set_grid(coord=coord[[5]])
         k.set_search(ivar=1)
         k.solve()
@@ -435,8 +435,8 @@ class TestExactMatch:
         coord, value = pc2d_obs
         k = Kriging(ndim=2, nvar=1, verbose=0)
         k.set_obs(ivar=1, coord=coord, value=value, nmax=_NMAX)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_NUG)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM_SPH)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_NUG)
+        k.set_vgm(ivar=1, jvar=1, **_VGM_SPH)
         k.set_grid(coord=coord[[7]])
         k.set_search(ivar=1)
         k.solve()
@@ -454,7 +454,7 @@ class TestExactMatch:
 
         k = Kriging(ndim=2, nvar=1, verbose=0)
         k.set_obs(ivar=1, coord=coord, value=value, nmax=n)
-        k.set_vgm(ivar=1, jvar=1, spec="sph 0.0 1.0 200.0 200.0 200.0 0.0 0.0 0.0")
+        k.set_vgm(ivar=1, jvar=1, vtype="sph", nugget=0.0, sill=1.0, a_major=200.0)
         k.set_grid(coord=coord)
         k.set_search(ivar=1)
         k.solve()

@@ -19,7 +19,7 @@ import os
 from pykriging import Kriging, ordinary_kriging
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "test_data")
-_VGM = "sph 0.0 0.12 5000.0 5000.0 5000.0 0.0 0.0 0.0"
+_VGM = dict(vtype="sph", nugget=0.0, sill=0.12, a_major=5000.0)
 _NMAX = 20
 
 
@@ -52,7 +52,7 @@ class TestBlockKriging:
         d = block_data
         k = Kriging(ndim=2, nvar=1, verbose=0)
         k.set_obs(ivar=1, coord=d["coord"], value=d["value"], nmax=_NMAX)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM)
+        k.set_vgm(ivar=1, jvar=1, **_VGM)
         k.set_grid_block(
             coord=d["sub_coords"],
             block_type=1,
@@ -70,7 +70,7 @@ class TestBlockKriging:
         d = block_data
         k = Kriging(ndim=2, nvar=1, verbose=0)
         k.set_obs(ivar=1, coord=d["coord"], value=d["value"], nmax=_NMAX)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM)
+        k.set_vgm(ivar=1, jvar=1, **_VGM)
         k.set_grid_block(
             coord=d["sub_coords"],
             block_type=1,
@@ -95,7 +95,7 @@ class TestBlockKriging:
         # Block kriging variance
         kb = Kriging(ndim=2, nvar=1, verbose=0)
         kb.set_obs(ivar=1, coord=d["coord"], value=d["value"], nmax=_NMAX)
-        kb.set_vgm(ivar=1, jvar=1, spec=_VGM)
+        kb.set_vgm(ivar=1, jvar=1, **_VGM)
         kb.set_grid_block(
             coord=d["sub_coords"],
             block_type=1,
@@ -109,7 +109,7 @@ class TestBlockKriging:
         # Point kriging variance at the block centroid
         kp = Kriging(ndim=2, nvar=1, verbose=0)
         kp.set_obs(ivar=1, coord=d["coord"], value=d["value"], nmax=_NMAX)
-        kp.set_vgm(ivar=1, jvar=1, spec=_VGM)
+        kp.set_vgm(ivar=1, jvar=1, **_VGM)
         kp.set_grid(coord=d["block_centroid"])
         kp.set_search(ivar=1)
         kp.solve()
@@ -131,7 +131,7 @@ class TestBlockKriging:
         # Block estimate
         kb = Kriging(ndim=2, nvar=1, verbose=0)
         kb.set_obs(ivar=1, coord=d["coord"], value=d["value"], nmax=_NMAX)
-        kb.set_vgm(ivar=1, jvar=1, spec=_VGM)
+        kb.set_vgm(ivar=1, jvar=1, **_VGM)
         kb.set_grid_block(
             coord=d["sub_coords"],
             block_type=1,
@@ -145,7 +145,7 @@ class TestBlockKriging:
         # Point estimate at centroid
         kp = Kriging(ndim=2, nvar=1, verbose=0)
         kp.set_obs(ivar=1, coord=d["coord"], value=d["value"], nmax=_NMAX)
-        kp.set_vgm(ivar=1, jvar=1, spec=_VGM)
+        kp.set_vgm(ivar=1, jvar=1, **_VGM)
         kp.set_grid(coord=d["block_centroid"])
         kp.set_search(ivar=1)
         kp.solve()
@@ -168,7 +168,7 @@ class TestBlockKriging:
 
         k = Kriging(ndim=2, nvar=1, verbose=0)
         k.set_obs(ivar=1, coord=d["coord"], value=const_value, nmax=_NMAX)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM)
+        k.set_vgm(ivar=1, jvar=1, **_VGM)
         k.set_grid_block(
             coord=d["sub_coords"],
             block_type=1,
@@ -189,7 +189,7 @@ class TestBlockKriging:
         def _block_var(localnugget=None):
             k = Kriging(ndim=2, nvar=1, verbose=0)
             k.set_obs(ivar=1, coord=d["coord"], value=d["value"], nmax=_NMAX)
-            k.set_vgm(ivar=1, jvar=1, spec=_VGM)
+            k.set_vgm(ivar=1, jvar=1, **_VGM)
             k.set_grid_block(
                 coord=d["sub_coords"],
                 block_type=1,
@@ -215,7 +215,7 @@ class TestBlockKriging:
         def _block_var(rs):
             k = Kriging(ndim=2, nvar=1, verbose=0)
             k.set_obs(ivar=1, coord=d["coord"], value=d["value"], nmax=_NMAX)
-            k.set_vgm(ivar=1, jvar=1, spec=_VGM)
+            k.set_vgm(ivar=1, jvar=1, **_VGM)
             k.set_grid_block(
                 coord=d["sub_coords"],
                 block_type=1,
@@ -247,7 +247,7 @@ class TestBlockKriging:
 
         k = Kriging(ndim=2, nvar=1, verbose=0)
         k.set_obs(ivar=1, coord=d["coord"], value=d["value"], nmax=_NMAX)
-        k.set_vgm(ivar=1, jvar=1, spec=_VGM)
+        k.set_vgm(ivar=1, jvar=1, **_VGM)
         k.set_grid_block(
             coord=two_sub_coords,
             block_type=1,

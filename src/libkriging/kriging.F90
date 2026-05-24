@@ -42,7 +42,7 @@
 module kriging
   use, INTRINSIC    :: ieee_arithmetic
   use iso_fortran_env, only: input_unit, error_unit, output_unit
-
+  use iso_c_binding
   use common
   use kriging_err
   use utils, only: set_seq, r8vec_normal_01, yesno, random_seed_initialize
@@ -52,9 +52,6 @@ module kriging
   use kdtree2_module
   use gaussian_quadrature
   implicit none
-
-  !-- subroutine name for error messages.
-  character(len=64)  :: subname
 
   !============================================================================
   ! t_data — base type for any spatially located dataset
@@ -187,12 +184,12 @@ module kriging
     !-- Simple kriging mean (used when unbias=0)
     real                 :: sk_mean = 0.0
 
+    character(kind=c_char), pointer  :: krige_info(:) ! kriging info string
     !-- Pointers to the three spatial objects and the variogram matrix
     type(t_obsgrid)  , pointer :: obs(:)          ! observations  [ivar0:nvar]
     type(t_grid)     , pointer :: grid            ! integration nodes
     type(t_blockgrid), pointer :: block           ! estimation targets
     type(vgm_struct) , pointer :: vgm(:,:)        ! variogram models [ivar0:nvar, ivar0:nvar]
-
   contains
     procedure :: initialize
     procedure :: set_obs
@@ -215,7 +212,8 @@ module kriging
     procedure :: reset_grid
     procedure :: reset_block
     procedure :: finalize
-    procedure :: print_system
+    procedure :: to_str
+    procedure :: update_info
   end type
 
   !============================================================================
@@ -281,8 +279,8 @@ contains
                                                 use_old_weight, write_mat, store_weight, &
                                                 verbose, cross_validation, neglect_error
     character(len=*), intent(in), optional   :: weight_file
+    character(len=*), parameter              :: subname = "t_kriging%initialize"
 
-    subname = "t_kriging%initialize"
 
     !-- Transfer optional arguments to self
     if (present(ndim))               self%ndim               = ndim
@@ -371,7 +369,8 @@ contains
     real,    intent(in), optional          :: localnugget(:)  ! per-block extra nugget       [nblocks]
 
     integer :: ngrid, nn, nb, iblock, igrid, idim
-    subname = "t_kriging%set_grid"
+    character(len=*), parameter :: subname = "t_kriging%set_grid"
+
 
     call self%reset_grid()
     call self%reset_block()
@@ -523,8 +522,8 @@ contains
   subroutine set_grid_drift(self, drift)
     class(t_kriging)   :: self
     real, intent(in)   :: drift(:,:)   ! drift values [ndrift, nblock]
+    character(len=*), parameter :: subname = "t_kriging%set_grid_drift"
 
-    subname = "t_kriging%set_grid_drift"
     if (.not. associated(self%block)) &
       call kriging_error(subname, 'Call initialize() before set_grid_drift.')
     if (self%block%n == 0) &
@@ -547,27 +546,41 @@ contains
   ! requires two calls).  Only the upper triangle (jvar >= ivar) needs to be
   ! specified; the lower triangle is filled symmetrically.
   !
-  ! spec format: "vtype nugget sill a_major a_minor1 a_minor2 azimuth dip plunge"
-  !   vtype    : sph, exp, gau, pow, cir, hol, or lin
+  !   vtype    : sph, exp, gau, pow, cir, hol, lin, or nug
   !   nugget   : nugget contribution of this structure
   !   sill     : partial sill
   !   a_major  : range along principal direction
-  !   a_minor1 : range along first minor direction
-  !   a_minor2 : range along second minor direction
-  !   azimuth, dip, plunge : rotation angles in degrees
+  !   a_minor1 : range along first minor direction  (default: a_major)
+  !   a_minor2 : range along second minor direction (default: a_minor1)
+  !   azimuth, dip, plunge : rotation angles in degrees (default: 0)
   !============================================================================
-  subroutine set_vgm(self, ivar, jvar, spec)
-    class(t_kriging)         :: self
-    character(*), intent(in) :: spec
-    integer,      intent(in) :: ivar, jvar
+  subroutine set_vgm(self, ivar, jvar, vtype, nugget, sill, a_major, a_minor1, a_minor2, azimuth, dip, plunge)
+    class(t_kriging), intent(inout)    :: self
+    integer,          intent(in)       :: ivar, jvar
+    character(*), optional, intent(in) :: vtype
+    real,         optional, intent(in) :: nugget, sill, a_major, a_minor1, a_minor2
+    real,         optional, intent(in) :: azimuth, dip, plunge
+    ! local
+    character(len=3) :: vtype_
+    real             :: nugget_, sill_, a_major_, a_minor1_, a_minor2_, azimuth_, dip_, plunge_
+    character(len=*), parameter :: subname = "t_kriging%set_vgm"
+    vtype_    = 'sph'    ; if (present(vtype   )) vtype_ = 'sph'
+    nugget_   = 0.0      ; if (present(nugget  )) nugget_ = nugget
+    sill_     = 1.0      ; if (present(sill    )) sill_ = sill
+    a_major_  = 1.0      ; if (present(a_major )) a_major_ = a_major
+    a_minor1_ = a_major_ ; if (present(a_minor1)) a_minor1_ = a_minor1
+    a_minor2_ = a_minor1_; if (present(a_minor2)) a_minor2_ = a_minor2
+    azimuth_  = 0.0      ; if (present(azimuth )) azimuth_ = azimuth
+    dip_      = 0.0      ; if (present(dip     )) dip_ = dip
+    plunge_   = 0.0      ; if (present(plunge  )) plunge_ = plunge
 
-    subname = "t_kriging%set_vgm"
+
     if (jvar == ivar) then
-      call self%vgm(jvar, ivar)%add(spec = spec)
+      call self%vgm(jvar, ivar)%add_args(trim(vtype_), nugget_, sill_, a_major_, a_minor1_, a_minor2_, azimuth_, dip_, plunge_)
     else if (jvar > ivar) then
-      !-- Fill both triangle entries with the same spec (cross-variogram is symmetric)
-      call self%vgm(jvar, ivar)%add(spec = spec)
-      call self%vgm(ivar, jvar)%add(spec = spec)
+      !-- Fill both triangle entries (cross-variogram is symmetric)
+      call self%vgm(jvar, ivar)%add_args(trim(vtype_), nugget_, sill_, a_major_, a_minor1_, a_minor2_, azimuth_, dip_, plunge_)
+      call self%vgm(ivar, jvar)%add_args(trim(vtype_), nugget_, sill_, a_major_, a_minor1_, a_minor2_, azimuth_, dip_, plunge_)
     else
       call kriging_error(subname, 'jvar must be >= ivar to set the upper triangle of the variogram matrix')
     end if
@@ -597,8 +610,8 @@ contains
     integer, intent(in), optional :: nmax
     real,    intent(in)           :: coord(:,:), value(:)
     real,    intent(in), optional :: variance(:), maxdist
+    character(len=*), parameter   :: subname = "t_kriging%set_obs"
 
-    subname = "t_kriging%set_obs"
     call self%reset_obs(ivar)
     associate(ndim => self%ndim, obs => self%obs(ivar))
       !-- Infer or validate ndim from coord
@@ -647,8 +660,8 @@ contains
     class(t_kriging)   :: self
     integer, intent(in) :: ivar
     real,    intent(in) :: drift(:,:)   ! [ndrift, nobs]
+    character(len=*), parameter :: subname = "t_kriging%set_obs_drift"
 
-    subname = "t_kriging%set_obs_drift"
     if (.not. associated(self%obs)) &
       call kriging_error(subname, 'Call initialize() before set_obs_drift.')
     if (self%obs(ivar)%n == 0) &
@@ -700,8 +713,7 @@ contains
 
     real,    allocatable :: temp(:,:), samp(:)
     integer              :: iblock, ifile, isim
-
-    subname = "t_kriging%set_sim"
+    character(len=*), parameter :: subname = "t_kriging%set_sim"
 
     if (self%nsim > 0) then
       if (self%block%n == 0) call kriging_error(subname, 'Grid needs to be set first.')
@@ -885,8 +897,8 @@ contains
   subroutine prepare(self)
     class(t_kriging) :: self
     integer          :: ivar, jvar
+    character(len=*), parameter :: subname = "t_kriging%prepare"
 
-    subname = "t_kriging%prepare"
 
     !-- Validate that all required arrays have been provided
     if (self%ndrift > 0) then
@@ -972,8 +984,8 @@ contains
     type(t_kriging_ctx), allocatable :: ctx
     integer                   :: ib
     real, allocatable          :: temp(:,:)
+    character(len=*), parameter :: subname = "t_kriging%solve"
 
-    subname = "t_kriging%solve"
     call self%prepare()
 
     associate(nb => self%block%n, verbose => self%verbose)
@@ -991,8 +1003,7 @@ contains
         ctx%iblock = ib
         !-- Progress bar: only the last thread prints to avoid interleaved output
 #ifdef _OPENMP
-        if (verbose .and. omp_get_thread_num() == omp_get_num_threads()-1) &
-          call progress(ib, nb)
+        if (verbose .and. omp_get_thread_num() == omp_get_num_threads()-1) call progress(ib, nb)
 #else
         if (verbose) call progress(ib, nb)
 #endif
@@ -1012,6 +1023,7 @@ contains
         if (self%write_mat) call ctx%write_matrix(self)
       end do
       !$OMP END DO
+      deallocate(ctx)     ! explicit per-thread cleanup; avoids crash on runtime auto-finalization of PRIVATE allocatables
       !$OMP END PARALLEL
 
 #ifdef __INTEL_COMPILER
@@ -1067,6 +1079,7 @@ contains
     real                        :: newloc(self%ndim, 1)
     logical, allocatable        :: is_obs(:)
     type(kdtree2_result)        :: results(self%obs(ivar)%nmax)
+    character(len=*), parameter :: subname = "t_kriging%search_neighbors"
 
     associate( &
       iblock  => ctx%iblock, &
@@ -1154,6 +1167,9 @@ contains
       end do
       nnear = k
     end associate
+#ifdef DEBUG
+    print *, subname, " Finished.", ivar, ctx%iblock
+#endif
   end subroutine search_neighbors
 
 
@@ -1197,6 +1213,7 @@ contains
     integer              :: i, j, k, k1, istart
     real                 :: lag(3), tmp
     class(t_data), pointer :: obs1, obs2
+    character(len=*), parameter :: subname = "t_kriging%calc_covariance"
 
     lag = 0.0
     associate( &
@@ -1262,6 +1279,9 @@ contains
         end associate
       end if
     end associate
+#ifdef DEBUG
+    print *, subname, " Finished.", ctx%iblock,  ir0, ic0, ivar, jvar
+#endif
   end subroutine calc_covariance
 
 
@@ -1298,8 +1318,8 @@ contains
     class(t_kriging_ctx) :: ctx
 
     integer          :: ivar, jvar, irow1, irow2, icol1, icol2
+    character(len=*), parameter :: subname = "t_kriging%assemble_linear_system"
 
-    subname = "t_kriging%assemble_linear_system"
     associate(nvar => self%nvar, dist => ctx%sqdist, npp => ctx%npp)
 
       !-- Find neighbours for each variable
@@ -1389,6 +1409,9 @@ contains
         matA(npp+1:matsize, npp+1:matsize) = 0.0
       end associate
     end associate
+#ifdef DEBUG
+    print *, subname, " Finished.", ctx%iblock
+#endif
   end subroutine assemble_linear_system
 
 
@@ -1429,8 +1452,8 @@ contains
 
     integer            :: info, i, j, k1
     real               :: lag(3)
+    character(len=*), parameter :: subname = "t_kriging%solve_linear_system"
 
-    subname = "t_kriging%solve_linear_system"
     lag = 0.0
 
     associate( &
@@ -1498,6 +1521,9 @@ contains
         var = max(var - dot_product(x(1, 1:matsize), rhsB(1, 1:matsize)), 0.0)
       end associate
     end associate
+#ifdef DEBUG
+    print *, subname, " Finished. ", ctx%iblock
+#endif
   end subroutine solve_linear_system
 
 
@@ -1514,12 +1540,17 @@ contains
     class(t_kriging)     :: krige
 
     integer :: ivar, k1
+    character(len=*), parameter :: subname = "t_kriging%assign_weight"
+
     k1 = 0
     do ivar = krige%ivar0, krige%nvar
       if (self%nnear(ivar) == 0) cycle
       self%weight(1:self%nnear(ivar), ivar) = self%x(1, k1+1:k1+self%nnear(ivar))
       k1 = k1 + self%nnear(ivar)
     end do
+#ifdef DEBUG
+    print *, subname, " Finished. ", self%iblock
+#endif
   end subroutine assign_weight
 
 
@@ -1557,6 +1588,7 @@ contains
     integer           :: ivar, k, nx, nnearb
     real, allocatable :: v(:), w(:)
     real              :: avg(max(1, self%nsim)), total_weight(self%ivar0:self%nvar)
+    character(len=*), parameter :: subname = "t_kriging%estimate_block"
 
     nx = max(1, self%nsim)
     associate( &
@@ -1614,60 +1646,106 @@ contains
       where(val < self%bounds(1)) val = self%bounds(1)
       where(val > self%bounds(2)) val = self%bounds(2)
     end associate
+#ifdef DEBUG
+    print *, subname, " Finished. ", ctx%iblock
+#endif
   end subroutine estimate_block
 
 
-  !============================================================================
-  ! print_system
-  !
-  ! Print the full kriging configuration to stdout.
-  ! Call after set_search() so all fields are populated.
-  !============================================================================
-  subroutine print_system(self)
+!============================================================================
+! update_info
+!
+! Returns the full kriging configuration as a single, multi-line string.
+! Call after set_search() so all fields are populated.
+!============================================================================
+function to_str(self) result(res_str)
     implicit none
-    class(t_kriging) :: self
-    integer          :: ivar, jvar
+    class(t_kriging), intent(inout) :: self
+    character(len=256) :: buffer
+    character(len=:), allocatable :: res_str
+    integer :: ivar, jvar
+    character(len=1), parameter :: NL = new_line('A')
 
-    print "(A   )", ""
-    print "(A   )", "==================== Configuration ===================="
-    print "(A,A)",  ' Version                : ', version
-    print "(A,I0)", " Dimension              : ", self%ndim
-    print "(A,I0)", " Number of Variables    : ", self%nvar
-    print "(A,I0)", " Number of Simulations  : ", self%nsim
-    print "(A,I0)", " Number of Drifts       : ", self%ndrift
-    print "(A,I0)", " Number of Blocks       : ", self%block%n
-    print "(A,A )", " Ordinary Kriging       : ", yesno(self%unbias == 1)
-    print "(A,A )", " LOO-Cross Validation   : ", yesno(self%cross_validation)
-    print "(A,A )", " Weight Correction      : ", yesno(self%weight_correction)
-    print "(A,A )", " Use Old Weights        : ", yesno(self%use_old_weight)
-    print "(A,A )", " Write Matrix for Debug : ", yesno(self%write_mat)
-    print "(A,A )", " Write Weight File      : ", yesno(self%store_weight)
-    if (self%store_weight .or. self%use_old_weight) &
-      print "(A,A )", " Weight File            : ", trim(self%weight_file)
-    if (self%unbias == 0) &
-      print "(A,G0)", " Simple Kriging Mean    : ", self%sk_mean
-    print "(A,G0)", " Lower Bound            : ", self%bounds(1)
-    print "(A,G0)", " Upper Bound            : ", self%bounds(2)
+    res_str = NL
+    write(buffer, "(A)"  ) "==================== Configuration ===================="    ; res_str = res_str // trim(buffer) // NL
+    write(buffer, "(A,A)")  " Version                : ", version                       ; res_str = res_str // trim(buffer) // NL
+    write(buffer, "(A,I0)") " Dimension              : ", self%ndim                     ; res_str = res_str // trim(buffer) // NL
+    write(buffer, "(A,I0)") " Number of Variables    : ", self%nvar                     ; res_str = res_str // trim(buffer) // NL
+    write(buffer, "(A,I0)") " Number of Simulations  : ", self%nsim                     ; res_str = res_str // trim(buffer) // NL
+    write(buffer, "(A,I0)") " Number of Drifts       : ", self%ndrift                   ; res_str = res_str // trim(buffer) // NL
+    write(buffer, "(A,I0)") " Number of Blocks       : ", self%block%n                  ; res_str = res_str // trim(buffer) // NL
+    write(buffer, "(A,A )") " Ordinary Kriging       : ", yesno(self%unbias == 1)       ; res_str = res_str // trim(buffer) // NL
+    write(buffer, "(A,A )") " LOO-Cross Validation   : ", yesno(self%cross_validation)  ; res_str = res_str // trim(buffer) // NL
+    write(buffer, "(A,A )") " Weight Correction      : ", yesno(self%weight_correction) ; res_str = res_str // trim(buffer) // NL
+    write(buffer, "(A,A )") " Use Old Weights        : ", yesno(self%use_old_weight)    ; res_str = res_str // trim(buffer) // NL
+    write(buffer, "(A,A )") " Write Matrix for Debug : ", yesno(self%write_mat)         ; res_str = res_str // trim(buffer) // NL
+    write(buffer, "(A,A )") " Write Weight File      : ", yesno(self%store_weight)      ; res_str = res_str // trim(buffer) // NL
+
+    if (self%store_weight .or. self%use_old_weight) then
+        write(buffer, "(A,A )") " Weight File : ", trim(self%weight_file)
+        res_str = res_str // trim(buffer) // NL
+    end if
+
+    if (self%unbias == 0) then
+        write(buffer, "(A,G0)") " Simple Kriging Mean    : ", self%sk_mean
+        res_str = res_str // trim(buffer) // NL
+    end if
+
+    write(buffer, "(A,G0)") " Lower Bound            : ", self%bounds(1); res_str = res_str // trim(buffer) // NL
+    write(buffer, "(A,G0)") " Upper Bound            : ", self%bounds(2); res_str = res_str // trim(buffer) // NL
+
     do ivar = 1, self%nvar
-      print "(A,I0,A)", " Variable ", ivar, ":"
-      print "(A,I0)",   "   Number of data       : ", self%obs(ivar)%n
-      print "(A,I0)",   "   Maximum neighbors    : ", self%obs(ivar)%nmax
-      print "(A,G0)",   "   Maxdist              : ", sqrt(self%obs(ivar)%maxdist)
-      print "(A,G0)",   "   Required Search      : ", yesno(self%obs(ivar)%need_search)
-      print "(A,G0)",   "   Anisotropic Search   : ", yesno(self%obs(ivar)%anisotropic_search)
+        write(buffer, "(A,I0,A)") "Variable ", ivar, ":"
+        res_str = res_str // trim(buffer) // NL
+
+        write(buffer, "(A,I0)") " Number of data         : ", self%obs(ivar)%n
+        res_str = res_str // trim(buffer) // NL
+
+        write(buffer, "(A,I0)") " Maximum neighbors      : ", self%obs(ivar)%nmax
+        res_str = res_str // trim(buffer) // NL
+
+        write(buffer, "(A,G0)") " Maxdist                : ", sqrt(self%obs(ivar)%maxdist)
+        res_str = res_str // trim(buffer) // NL
+
+        write(buffer, "(A,G0)") " Required Search        : ", yesno(self%obs(ivar)%need_search)
+        res_str = res_str // trim(buffer) // NL
+
+        write(buffer, "(A,G0)") " Anisotropic Search     : ", yesno(self%obs(ivar)%anisotropic_search)
+        res_str = res_str // trim(buffer) // NL
     end do
-    print "(A)", " Variogram Models"
+
+    write(buffer, "(A)") " Variogram Models"
+    res_str = res_str // trim(buffer) // NL
+
     do ivar = 1, self%nvar
-      do jvar = 1, self%nvar
-        if (ivar == jvar) then
-          print "(A,I0,A,I0,A)", "   Model for Variable ", ivar, self%vgm(jvar, ivar)%tostr()
-        else
-          print "(A,I0,A,I0,A)", "   Model between Variable ", ivar, " and ", jvar, self%vgm(jvar, ivar)%tostr()
-        end if
-      end do
+        do jvar = 1, self%nvar
+            if (ivar == jvar) then
+                write(buffer, "(A,I0,A,I0,A)") " Model for Variable ", ivar, self%vgm(jvar, ivar)%tostr()
+            else
+                write(buffer, "(A,I0,A,I0,A)") " Model between Variable ", ivar, " and ", jvar, self%vgm(jvar, ivar)%tostr()
+            end if
+            res_str = res_str // trim(buffer) // NL
+        end do
     end do
-    print "(A   )", "================== End Configuration =================="
-  end subroutine print_system
+
+    write(buffer, "(A )") "================== End Configuration =================="
+    res_str = res_str // trim(buffer) // NL
+end function to_str
+
+subroutine update_info(self)
+    class(t_kriging) :: self
+    character(len=:), allocatable :: res_str
+    integer :: n, i
+    res_str = self%to_str()
+    n = len_trim(res_str)
+    if (associated(self%krige_info)) deallocate(self%krige_info)
+    allocate(self%krige_info(n + 1))
+    do i = 1, n
+      self%krige_info(i) = res_str(i:i)
+    end do
+    self%krige_info(n+1) = c_null_char
+end subroutine update_info
+
 
 
   !============================================================================
