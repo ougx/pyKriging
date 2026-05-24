@@ -1,6 +1,6 @@
 from scipy.spatial.distance import cdist, pdist
 from _kriging import Kriging
-_VGM = "sph 0.0 1.0 50.0 50.0 50.0 0.0 0.0 0.0"
+_VGM = dict(vtype="sph", nugget=0.0, sill=1.0, a_major=50.0)
 #%% simple test
 if __name__ == "__main__":
     import numpy as np
@@ -19,7 +19,7 @@ if __name__ == "__main__":
     lower = 0.0
     k = Kriging(ndim=2, nvar=1, bounds=(lower, 10.0), write_mat=True, verbose=True)
     k.set_obs(ivar=1, coord=coord, value=value, nmax=10)
-    k.set_vgm(ivar=1, jvar=1, spec=_VGM)
+    k.set_vgm(ivar=1, jvar=1, **_VGM)
     k.set_grid(coord=grid)
     k.set_search(ivar=1)
     k.solve()

@@ -208,7 +208,15 @@ _DEF_SYMS := \
   krige_set_sim krige_set_search krige_prepare \
   krige_get_max_threads krige_get_num_threads \
   krige_solve krige_get_nblocks krige_get_nsim \
-  krige_get_estimate krige_get_variance
+  krige_get_estimate krige_get_variance \
+  krige_st_create krige_st_destroy krige_st_initialize \
+  krige_st_set_st_model \
+  krige_st_set_obs krige_st_set_obs_drift krige_st_set_vgm \
+  krige_st_set_vgm_temporal krige_st_set_vgm_joint_sills \
+  krige_st_set_grid krige_st_set_grid_block krige_st_set_grid_cv \
+  krige_st_set_grid_drift krige_st_set_sim krige_st_set_search \
+  krige_st_solve krige_st_get_nblocks krige_st_get_nsim \
+  krige_st_get_estimate krige_st_get_variance
 
 # ---------------------------------------------------------------------------
 # Top-level targets
