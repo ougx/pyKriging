@@ -31,12 +31,24 @@ import numpy as np
 from typing import Optional, Union
 
 # ---------------------------------------------------------------------------
+# Intel OpenMP runtime guards — see _kriging.py for full explanation.
+# Must be set before the first import of pykriging in a fresh process.
+# ---------------------------------------------------------------------------
+if os.name == "nt":
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+    os.environ.setdefault("KMP_STACKSIZE", "64m")
+
+# ---------------------------------------------------------------------------
 # Load the shared library (same library as the base kriging module)
 # ---------------------------------------------------------------------------
 def _load_lib():
     base = os.path.dirname(__file__)
     if sys.platform == "win32":
         names = ["kriging.dll"]
+        # Prepend the package directory to PATH so any Intel runtime DLLs
+        # placed alongside kriging.dll (libcaf_ifx.dll, libiomp5md.dll, …)
+        # are found by Windows during runtime dynamic loads.
+        os.environ['PATH'] = base + os.pathsep + os.environ.get('PATH', '')
     elif sys.platform == "darwin":
         names = ["libkriging.dylib"]
     else:

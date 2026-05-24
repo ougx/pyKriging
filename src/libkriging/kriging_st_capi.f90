@@ -64,7 +64,9 @@ contains
     real(c_double),      intent(in), value :: sk_mean
 
     type(t_kriging_st), pointer :: obj
+    real :: fbounds(2)
     call get_obj(handle, obj)
+    fbounds = real(bounds)
 
     call obj%initialize( &
       nvar               = int(nvar), &
@@ -80,7 +82,7 @@ contains
       neglect_error      = l(neglect_error), &
       verbose            = l(verbose), &
       weight_file        = c2fstr(weight_file), &
-      bounds             = real(bounds), &
+      bounds             = fbounds, &
       sk_mean            = real(sk_mean), &
       seed               = int(seed))
   end subroutine krige_st_initialize

@@ -118,7 +118,14 @@ contains
     real(c_double),      intent(in), value :: sk_mean
 
     type(t_kriging), pointer :: obj
+    !-- Local copy avoids an implicit array temporary for the 'bounds' argument
+    !   (Intel warning 406: "array temporary created for argument #N").
+    !   real(c_double) and the default real kind are both 8-byte with the
+    !   compiler flags used (/real-size:64 / -fdefault-real-8), so the
+    !   assignment is lossless.
+    real :: fbounds(2)
     call get_obj(handle, obj)
+    fbounds = real(bounds)
 
     call obj%initialize( &
       ndim               = int(ndim), &
@@ -135,7 +142,7 @@ contains
       neglect_error      = l(neglect_error), &
       verbose            = l(verbose), &
       weight_file        = c2fstr(weight_file), &
-      bounds             = real(bounds), &
+      bounds             = fbounds, &
       sk_mean            = real(sk_mean), &
       seed               = int(seed))
   end subroutine krige_initialize

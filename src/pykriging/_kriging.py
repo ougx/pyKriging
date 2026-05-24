@@ -28,6 +28,27 @@ import os
 import numpy as np
 from typing import Optional
 import random
+
+# ---------------------------------------------------------------------------
+# Intel OpenMP runtime guards (Windows + ifx/ifort builds)
+#
+# KMP_DUPLICATE_LIB_OK=TRUE  — suppresses the crash that occurs when two
+#   OpenMP runtimes (e.g. Intel libiomp5md.dll and GNU libgomp.dll from
+#   a pip-installed numpy/scipy) are both loaded into the same process.
+#   Without this, the first !$OMP PARALLEL region triggers an access
+#   violation that cascades across all OpenMP threads.
+#
+# KMP_STACKSIZE — each Intel OpenMP worker thread gets its own stack.
+#   Default is 4 MB on Windows.  The largest automatic array in the hot
+#   path is L(nmax, nmax) in kriging_solve: L(1000,1000) ≈ 4 MB, which
+#   would overflow the 4 MB default.  Setting 64 MB is safe for any
+#   realistic nmax.  Users can override this via the environment variable
+#   before importing pykriging.
+# ---------------------------------------------------------------------------
+if os.name == "nt":  # Windows only
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+    os.environ.setdefault("KMP_STACKSIZE", "64m")
+
 # ---------------------------------------------------------------------------
 # Load the shared library (platform-aware)
 # ---------------------------------------------------------------------------
@@ -36,6 +57,12 @@ def _load_lib():
     import sys as _sys
     if _sys.platform == "win32":
         names = ["kriging.dll"]
+        # Prepend the package directory to PATH so that any Intel runtime DLLs
+        # placed alongside kriging.dll (e.g. libcaf_ifx.dll, libiomp5md.dll)
+        # are found by Windows when they are dynamically loaded at runtime.
+        # This is needed because LoadLibraryW (used by libiomp5md.dll to load
+        # libcaf_ifx.dll at runtime) searches PATH, not the DLL's own directory.
+        os.environ['PATH'] = base + os.pathsep + os.environ.get('PATH', '')
     elif _sys.platform == "darwin":
         names = ["libkriging.dylib"]
     else:
