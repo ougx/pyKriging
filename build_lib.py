@@ -112,6 +112,28 @@ def _module_flags(compiler: str, mod_dir: str) -> list:
         return ["-J", mod_dir, "-I", mod_dir]
 
 
+def _module_flags(compiler: str, mod_dir: str) -> list:
+    """Return the flags that set the Fortran module output and search directory.
+
+    gfortran  : -J <dir>  -I <dir>   (two tokens each, space-separated)
+    ifx/ifort : /module:<dir>  /I<dir>   (Windows, single token, no space)
+               -module <dir>  -I<dir>    (Linux/macOS)
+
+    mod_dir should be a build directory (e.g. build/libkriging) so that
+    generated .mod files stay out of the source tree.
+    """
+    if compiler == "gfortran":
+        return ["-J", mod_dir, "-I", mod_dir]
+    elif compiler in ("ifx", "ifort"):
+        if _ON_WINDOWS:
+            # Single-token form so subprocess quoting handles spaces in path
+            return [f"/module:{mod_dir}", f"/I{mod_dir}"]
+        else:
+            return ["-module", mod_dir, f"-I{mod_dir}"]
+    else:
+        return ["-J", mod_dir, "-I", mod_dir]
+
+
 def detect_compiler():
     for compiler in ("ifx", "gfortran", "ifort"):
         if shutil.which(compiler):
