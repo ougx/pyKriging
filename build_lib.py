@@ -99,6 +99,25 @@ FLAGS = {
 }
 
 
+def _module_flags(compiler: str, fortran_dir: str) -> list:
+    """Return the flags that set the Fortran module output and search directory.
+
+    gfortran  : -J <dir>  -I <dir>   (two tokens each, space-separated)
+    ifx/ifort : /module:<dir>  /I<dir>   (Windows, single token, no space)
+               -module <dir>  -I<dir>    (Linux/macOS)
+    """
+    if compiler == "gfortran":
+        return ["-J", fortran_dir, "-I", fortran_dir]
+    elif compiler in ("ifx", "ifort"):
+        if _ON_WINDOWS:
+            # Single-token form so subprocess quoting handles spaces in path
+            return [f"/module:{fortran_dir}", f"/I{fortran_dir}"]
+        else:
+            return ["-module", fortran_dir, f"-I{fortran_dir}"]
+    else:
+        return ["-J", fortran_dir, "-I", fortran_dir]
+
+
 def detect_compiler():
     for compiler in ("ifx", "gfortran", "ifort"):
         if shutil.which(compiler):
@@ -177,10 +196,23 @@ def _write_def_file(path: Path) -> None:
     print(f"Generated: {path}")
 
 
+
+def _clean_mod_files(fortran_dir: Path) -> None:
+    """Delete .mod files only when switching between incompatible compilers.
+    """
+    patterns = ("*.mod", "*.o", "*.obj")
+    removed = [f for p in patterns for f in fortran_dir.glob(p)]
+    for p in patterns:
+        for f in fortran_dir.glob(p):
+            os.remove(f)
+            print("Deleted: ", f)
+
+
 def build(compiler: str, arg: argparse.ArgumentParser, fortran_dir: Path, out_dir: Path):
     flag_set = FLAGS.get(compiler)
     if flag_set is None:
         raise ValueError(f"Unknown compiler {compiler!r}. Choose: gfortran, ifx, ifort")
+    _clean_mod_files(fortran_dir, )
     if arg.no_openmp:
         openmp_flags = {
             "gfortran": ["fopenmp"],
@@ -212,7 +244,7 @@ def build(compiler: str, arg: argparse.ArgumentParser, fortran_dir: Path, out_di
         [compiler]
         + flag_set[arg.opt]
         + flag_set["shared"]
-        + ["-J", str(fortran_dir), "-I", str(fortran_dir)]
+        + _module_flags(compiler, str(fortran_dir))
         + sources
         + ["-o", str(out_path)]
         + extra
@@ -229,7 +261,8 @@ def build(compiler: str, arg: argparse.ArgumentParser, fortran_dir: Path, out_di
         print(f"\nCompilation failed (exit code {result.returncode})")
         sys.exit(result.returncode)
 
-    print(f"\nSuccess: {out_path}")
+    else:
+        print(f"\nSuccess: {out_path}")
     return out_path
 
 
