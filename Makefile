@@ -33,12 +33,14 @@ endif
 
 ifeq ($(WINDOWS),1)
   DLL_FILE  := src/pykriging/kriging.dll
-  EXE_FILE  := bin/sparks.exe
+  EXE_FILE  := bin/sparks
   OBJEXT    := obj
+  MKDIR     := mkdir -p # depending if you have cygwin or msys
 else
   DLL_FILE  := src/pykriging/libkriging.so
   EXE_FILE  := bin/sparks
   OBJEXT    := o
+  MKDIR     := mkdir -p
 endif
 
 # Default goal must come before the first target rule.
@@ -49,11 +51,25 @@ endif
 # (GNU Make's built-in default is 'f77' so we check $(origin FC))
 # ---------------------------------------------------------------------------
 ifeq ($(filter command_line environment,$(origin FC)),)
-  _FC_FOUND := $(firstword \
-                 $(shell which ifx 2>/dev/null) \
-                 $(shell which gfortran 2>/dev/null) \
-                 $(shell which ifort 2>/dev/null))
-  FC := $(notdir $(_FC_FOUND))
+  # Better Auto-detection: If we are on Windows, check if the shell is Bash or CMD
+  ifeq ($(WINDOWS),1)
+      ifneq ($(findstring sh,$(SHELL)),)
+          # Git Bash / MSYS2: Find the path, then use 'cygpath -d' to force a 100% space-free short path
+          FIND_FC_CMD = (which ifx || which gfortran || which ifort) 2>/dev/null | xargs -I {} cygpath -d "{}" 2>/dev/null
+      else
+          # Windows CMD: 'where' syntax
+          FIND_FC_CMD = where ifx gfortran ifort 2>nul
+      endif
+  else
+      # Linux / macOS
+      FIND_FC_CMD = which ifx 2>/dev/null || which gfortran 2>/dev/null || which ifort 2>/dev/null
+  endif
+
+  # Using 'subst' handles any leftover escaped characters cleanly
+  _FC_FOUND := $(subst \,/,$(firstword $(shell $(FIND_FC_CMD))))
+  FC := $(notdir $(basename $(_FC_FOUND)))
+#   $(info [DEBUG] Current FIND_FC_CMD is: $(FIND_FC_CMD))
+#   $(info [DEBUG] Discovered compiler path: $(_FC_FOUND))
 endif
 ifeq ($(FC),)
   $(error No Fortran compiler found. Set FC=gfortran, FC=ifx, or FC=ifort)
@@ -63,6 +79,8 @@ endif
 # Build mode
 # ---------------------------------------------------------------------------
 OPT ?= release
+# Set OPENMP=0 to disable OpenMP parallelisation (e.g. make OPENMP=0)
+OPENMP ?= 1
 
 # ---------------------------------------------------------------------------
 # Object-file directories (per-target to keep libkriging and sparks separate)
@@ -75,11 +93,26 @@ SPK_BDIR := build/sparks
 # ---------------------------------------------------------------------------
 # Compiler flags
 # ---------------------------------------------------------------------------
+# 1. Initialize the variable as empty first
+OMP_FLAGS :=
+
+# 2. Conditionals MUST start on their own fresh lines
+ifeq ($(OPENMP),1)
+    ifeq ($(FC),gfortran)
+        OMP_FLAGS := -fopenmp
+    else ifneq ($(filter $(FC),ifx ifort),)
+        ifeq ($(WINDOWS),1)
+            OMP_FLAGS := /Qopenmp
+        else
+            OMP_FLAGS := -qopenmp
+        endif
+    endif
+endif
+
 ifeq ($(FC),gfortran)
-  FFLAGS_release := -O2 -fdefault-real-8 -fopenmp -cpp -fbacktrace \
-                    -ffree-line-length-none
-  FFLAGS_debug   := -O0 -g -fdefault-real-8 -fopenmp -Wall -fcheck=all \
-                    -fbacktrace -cpp -ffree-line-length-none
+  FFLAGS         := -fdefault-real-8 -cpp -fbacktrace -ffree-line-length-none $(OMP_FLAGS)
+  FFLAGS_release := -O2 $(FFLAGS)
+  FFLAGS_debug   := -O0 -g -Wall -fcheck=all $(FFLAGS)
   LIB_SHARED     := -shared -fPIC
   # -J <dir>: write .mod files; -I <dir>: search for .mod files
   LIB_MODF       := -J $(LIB_BDIR) -I $(LIB_BDIR)
@@ -88,18 +121,29 @@ ifeq ($(FC),gfortran)
 
 else ifneq ($(filter $(FC),ifx ifort),)
   ifeq ($(WINDOWS),1)
-    FFLAGS_release := /O2 /real-size:64 /Qopenmp /heap-arrays:0 /traceback /fpp
-    FFLAGS_debug   := /Od /debug:full /real-size:64 /Qopenmp /heap-arrays:0 \
-                      /traceback /warn:all /fpp /check:all
-    LIB_SHARED     := /dll /libs:dll
+    # MSYS2/Git Bash auto-converts arguments starting with '/' to Windows paths
+    # (e.g. /O2 → C:/Users/hydro/O2).  Setting these env vars disables that so
+    # Intel's /flag-style options reach ifx/ifort unchanged.
+    export MSYS2_ARG_CONV_EXCL := *
+    export MSYS_NO_PATHCONV    := 1
+    FFLAGS         := /real-size:64 /traceback /fpp /nologo $(OMP_FLAGS)
+    FFLAGS_release := /O2 $(FFLAGS)
+    FFLAGS_debug   := /Od /debug:full /warn:all /check:all $(FFLAGS)
+    # /libs:static — embed Intel Fortran core runtime into the DLL so that
+    # ifcore.dll / libcaf_ifx.dll are NOT required at runtime.  Without this,
+    # the Intel runtime tries to dynamically load libcaf_ifx.dll (the Coarray
+    # runtime) on the first Fortran call, which fails when the Intel oneAPI
+    # directory is not on the Python process PATH (error 493).
+    # libiomp5md.dll (OpenMP) is still linked dynamically and must be on PATH.
+    LIB_SHARED     := /dll /libs:static
     # /module:<dir>: write .mod;  /I<dir>: search (no space before path)
     LIB_MODF       := /module:$(LIB_BDIR) /I$(LIB_BDIR)
     SPK_MODF       := /module:$(SPK_BDIR) /I$(SPK_BDIR)
     DLL_EXTRA      := -link /def:src/pykriging/kriging.def
   else
-    FFLAGS_release := -O2 -real-size:64 -qopenmp -traceback -fpp
-    FFLAGS_debug   := -O0 -g -real-size:64 -qopenmp -traceback -fpp \
-                      -warn all -check all
+    FFLAGS         := -real-size:64 -traceback -fpp -nologo $(OMP_FLAGS)
+    FFLAGS_release := -O2 $(FFLAGS)
+    FFLAGS_debug   := -O0 -g -warn all -check all $(FFLAGS)
     LIB_SHARED     := -shared -fPIC
     LIB_MODF       := -module $(LIB_BDIR) -I$(LIB_BDIR)
     SPK_MODF       := -module $(SPK_BDIR) -I$(SPK_BDIR)
@@ -203,6 +247,8 @@ else
 endif
 	@echo ""
 	@echo "Built: $@"
+	@echo ""
+	@echo ""
 
 # Pattern rules for object files — libkriging sources
 $(LIB_BDIR)/%.$(OBJEXT): src/libkriging/%.f90 | $(LIB_BDIR)
@@ -244,7 +290,9 @@ $(SPK_BDIR)/%.$(OBJEXT): src/sparks/%.F90 | $(SPK_BDIR)
 # Build directories (order-only prerequisites)
 # ---------------------------------------------------------------------------
 $(LIB_BDIR) $(SPK_BDIR):
-	python -c "import os; os.makedirs('$@', exist_ok=True)"
+	$(MKDIR) $@
+
+#python -c "import os; os.makedirs('$@', exist_ok=True)"
 
 # ---------------------------------------------------------------------------
 # .def file
@@ -275,10 +323,13 @@ clean:
 # info — print build settings
 # ---------------------------------------------------------------------------
 info:
-	@echo Compiler : $(FC)
-	@echo Mode     : $(OPT)
-	@echo Platform : $(if $(WINDOWS),Windows,Linux/macOS)
-	@echo DLL      : $(DLL_FILE)
-	@echo EXE      : $(EXE_FILE)
-	@echo FFLAGS   : $(FFLAGS)
-	@echo LIB_MODF : $(LIB_MODF)
+	@echo 'Compiler :' $(FC)
+	@echo 'Path     :' $(_FC_FOUND)
+	@echo 'Mode     :' $(OPT)
+	@echo 'OpenMP   :' $(OPENMP)
+	@echo 'OMP_FLAGS:' $(OMP_FLAGS)
+	@echo 'Platform :' $(if $(WINDOWS),Windows,Linux/macOS)
+	@echo 'DLL      :' $(DLL_FILE)
+	@echo 'EXE      :' $(EXE_FILE)
+	@echo 'FFLAGS   :' $(FFLAGS)
+	@echo 'LIB_MODF :' $(LIB_MODF)
