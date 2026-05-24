@@ -31,17 +31,20 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 SOURCES = [
     "common.f90",
+    "kriging_err.f90",         # must precede variogram (variogram uses kriging_error)
     "utils.F90",
     "progress_bar.F90",
     "rotation.f90",
     "variogram.f90",
+    "variogram_st.f90",        # ST variogram models (sum-metric, product-sum)
     "kdtree2_maxidx.f90",
     "gaussian_quadrature.f90",
     "lapack.f",
     "solver.f90",
-    "kriging_err.f90",
     "kriging.F90",
     "kriging_capi.f90",
+    "kriging_st.F90",          # t_kriging_st — space-time kriging type
+    "kriging_st_capi.f90",     # C API for ST types
 ]
 
 # ---------------------------------------------------------------------------
@@ -141,6 +144,27 @@ _CAPI_EXPORTS = [
     "krige_get_nsim",
     "krige_get_estimate",
     "krige_get_variance",
+    # Space-time kriging
+    "krige_st_create",
+    "krige_st_destroy",
+    "krige_st_initialize",
+    "krige_st_set_st_model",
+    "krige_st_set_obs",
+    "krige_st_set_obs_drift",
+    "krige_st_set_vgm",
+    "krige_st_set_vgm_temporal",
+    "krige_st_set_vgm_joint_sills",
+    "krige_st_set_grid",
+    "krige_st_set_grid_block",
+    "krige_st_set_grid_cv",
+    "krige_st_set_grid_drift",
+    "krige_st_set_sim",
+    "krige_st_set_search",
+    "krige_st_solve",
+    "krige_st_get_nblocks",
+    "krige_st_get_nsim",
+    "krige_st_get_estimate",
+    "krige_st_get_variance",
 ]
 
 
@@ -188,6 +212,7 @@ def build(compiler: str, arg: argparse.ArgumentParser, fortran_dir: Path, out_di
         [compiler]
         + flag_set[arg.opt]
         + flag_set["shared"]
+        + ["-J", str(fortran_dir), "-I", str(fortran_dir)]
         + sources
         + ["-o", str(out_path)]
         + extra

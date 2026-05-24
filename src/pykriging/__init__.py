@@ -25,10 +25,19 @@ from pykriging._kriging import (   # noqa: F401
     sequential_gaussian_simulation,
 )
 
+from pykriging._kriging_st import (   # noqa: F401
+    SpaceTimeKriging,
+    spacetime_kriging,
+    spacetime_cokriging,
+)
+
 __version__ = "0.1.0"
 __all__ = [
     "Kriging",
     "ordinary_kriging",
     "cokriging",
     "sequential_gaussian_simulation",
+    "SpaceTimeKriging",
+    "spacetime_kriging",
+    "spacetime_cokriging",
 ]
