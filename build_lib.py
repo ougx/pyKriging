@@ -99,23 +99,26 @@ FLAGS = {
 }
 
 
-def _module_flags(compiler: str, fortran_dir: str) -> list:
+def _module_flags(compiler: str, mod_dir: str) -> list:
     """Return the flags that set the Fortran module output and search directory.
 
     gfortran  : -J <dir>  -I <dir>   (two tokens each, space-separated)
     ifx/ifort : /module:<dir>  /I<dir>   (Windows, single token, no space)
                -module <dir>  -I<dir>    (Linux/macOS)
+
+    mod_dir should be a build directory (e.g. build/libkriging) so that
+    generated .mod files stay out of the source tree.
     """
     if compiler == "gfortran":
-        return ["-J", fortran_dir, "-I", fortran_dir]
+        return ["-J", mod_dir, "-I", mod_dir]
     elif compiler in ("ifx", "ifort"):
         if _ON_WINDOWS:
             # Single-token form so subprocess quoting handles spaces in path
-            return [f"/module:{fortran_dir}", f"/I{fortran_dir}"]
+            return [f"/module:{mod_dir}", f"/I{mod_dir}"]
         else:
-            return ["-module", fortran_dir, f"-I{fortran_dir}"]
+            return ["-module", mod_dir, f"-I{mod_dir}"]
     else:
-        return ["-J", fortran_dir, "-I", fortran_dir]
+        return ["-J", mod_dir, "-I", mod_dir]
 
 
 def detect_compiler():
@@ -197,22 +200,19 @@ def _write_def_file(path: Path) -> None:
 
 
 
-def _clean_mod_files(fortran_dir: Path) -> None:
-    """Delete .mod files only when switching between incompatible compilers.
-    """
-    patterns = ("*.mod", "*.o", "*.obj")
-    removed = [f for p in patterns for f in fortran_dir.glob(p)]
-    for p in patterns:
-        for f in fortran_dir.glob(p):
-            os.remove(f)
-            print("Deleted: ", f)
+def _clean_mod_files(mod_dir: Path) -> None:
+    """Delete stale .mod files from the build directory before recompiling."""
+    for f in mod_dir.glob("*.mod"):
+        os.remove(f)
+        print("Deleted: ", f)
 
 
-def build(compiler: str, arg: argparse.ArgumentParser, fortran_dir: Path, out_dir: Path):
+def build(compiler: str, arg: argparse.ArgumentParser, fortran_dir: Path,
+          out_dir: Path, mod_dir: Path):
     flag_set = FLAGS.get(compiler)
     if flag_set is None:
         raise ValueError(f"Unknown compiler {compiler!r}. Choose: gfortran, ifx, ifort")
-    _clean_mod_files(fortran_dir, )
+    _clean_mod_files(mod_dir)
     if arg.no_openmp:
         openmp_flags = {
             "gfortran": ["fopenmp"],
@@ -244,7 +244,7 @@ def build(compiler: str, arg: argparse.ArgumentParser, fortran_dir: Path, out_di
         [compiler]
         + flag_set[arg.opt]
         + flag_set["shared"]
-        + _module_flags(compiler, str(fortran_dir))
+        + _module_flags(compiler, str(mod_dir))
         + sources
         + ["-o", str(out_path)]
         + extra
@@ -280,15 +280,17 @@ def main():
     print(f"Compiler: {compiler}")
     print(f"Mode:     {args.opt}")
 
-    root       = Path(__file__).parent
+    root        = Path(__file__).parent
     fortran_dir = root / "src" / "libkriging"
     out_dir     = root / "src" / "pykriging"
+    mod_dir     = root / "build" / "libkriging"
 
     if not fortran_dir.exists():
         raise FileNotFoundError(f"Fortran source directory not found: {fortran_dir}")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    build(compiler, args, fortran_dir, out_dir)
+    mod_dir.mkdir(parents=True, exist_ok=True)
+    build(compiler, args, fortran_dir, out_dir, mod_dir)
 
 
 if __name__ == "__main__":
