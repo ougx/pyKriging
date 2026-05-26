@@ -220,19 +220,19 @@ k.set_st_model(model="sum_metric", transform="bounded", at=5.0)
 k.set_obs(ivar=1, coord=obs_coord, value=obs_value, time=obs_time,
           nmax=30, maxdist=5000.0, maxtlag=20.0)
 
-# 3 — spatial variogram (call multiple times for nested structures)
+# 3 — estimation targets: coord shape (ngrid, 3), time shape (ngrid,)
+k.set_grid(coord=grid_coord, time=grid_time)
+
+# 4 — spatial variogram (call multiple times for nested structures)
 k.set_vgm(ivar=1, jvar=1, vtype="sph",
           nugget=0.0, sill=0.8, a_major=1000, a_minor1=500, a_minor2=200)
 
-# 4 — temporal variogram (one call per nested structure)
+# 5 — temporal variogram (one call per nested structure)
 k.set_vgm_temporal(ivar=1, jvar=1, vtype="exp",
                    nugget=0.0, sill=0.6, at_k=10.0)
 
-# 5 — joint sills (sum-metric only; one float per spatial nested structure)
+# 6 — joint sills (sum-metric only; one float per spatial nested structure)
 k.set_vgm_joint_sills(ivar=1, jvar=1, 0.4)
-
-# 6 — estimation targets: coord shape (ngrid, 3), time shape (ngrid,)
-k.set_grid(coord=grid_coord, time=grid_time)
 
 # 7 — build KD-tree
 k.set_search(ivar=1)
