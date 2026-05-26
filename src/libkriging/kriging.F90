@@ -160,6 +160,7 @@ module kriging
     logical              :: write_mat          = .false. ! dump matrices to CSV for debugging
     logical              :: verbose            = .false. ! print progress to stdout
     logical              :: neglect_error      = .false. ! set NaN instead of stopping on singular
+    logical              :: varying_vgm        = .false. ! use different vgm per block
 
     !-- File path for factor file (weight storage/reload)
     character(len=1024)  :: weight_file = ""
@@ -189,7 +190,7 @@ module kriging
     type(t_obsgrid)  , pointer :: obs(:)          ! observations  [ivar0:nvar]
     type(t_grid)     , pointer :: grid            ! integration nodes
     type(t_blockgrid), pointer :: block           ! estimation targets
-    type(vgm_struct) , pointer :: vgm(:,:)        ! variogram models [ivar0:nvar, ivar0:nvar]
+    type(vgm_struct) , pointer :: vgm(:,:,:)      ! variogram models [ivar0:nvar, ivar0:nvar, 1] last dimension can be nblock for spatial varying vgm
   contains
     procedure :: initialize
     procedure :: set_obs
@@ -208,6 +209,7 @@ module kriging
     procedure :: solve
     procedure :: write_weight
     procedure :: read_weight
+    procedure :: validate_vgm
     procedure :: reset_obs
     procedure :: reset_grid
     procedure :: reset_block
@@ -241,6 +243,7 @@ module kriging
     real,    allocatable :: x(:,:)           ! raw solver output (weights + multipliers) [1, matsize]
     real,    allocatable :: matA(:,:)        ! covariance matrix C          [matsize, matsize]
     real,    allocatable :: rhsB(:,:)        ! right-hand-side c0           [1, matsize]
+    type(vgm_struct), pointer :: vgm(:,:) => null() ! thread-private variogram slice
   contains
     procedure :: initialize  => initialize_kriging_ctx
     procedure :: assign_weight   ! split x into per-variable weight arrays
@@ -270,7 +273,8 @@ contains
   !============================================================================
   subroutine initialize(self, ndim, nvar, ndrift, unbias, nsim, anisotropic_search,  &
                         weight_correction, use_old_weight, store_weight, cross_validation, &
-                        write_mat, neglect_error, verbose, weight_file, bounds, sk_mean, seed)
+                        write_mat, neglect_error, varying_vgm, verbose, &
+                        weight_file, bounds, sk_mean, seed)
     class(t_kriging)                         :: self
     integer, intent(in), optional            :: ndim
     integer, intent(in), optional            :: nvar, ndrift, unbias, nsim, seed
@@ -297,6 +301,7 @@ contains
     if (present(bounds))             self%bounds             = bounds
     if (present(sk_mean))            self%sk_mean            = sk_mean
     if (present(cross_validation))   self%cross_validation   = cross_validation
+    if (present(varying_vgm))        self%varying_vgm        = varying_vgm
     if (present(verbose))            self%verbose            = verbose
     if (present(neglect_error))      self%neglect_error      = neglect_error
 
@@ -313,7 +318,6 @@ contains
     allocate(self%obs  (self%nvar))
     allocate(self%grid)
     allocate(self%block)
-    allocate(self%vgm  (self%ivar0:self%nvar, self%ivar0:self%nvar))
 
     !-- Sanity checks: mutually exclusive flag combinations
     if (self%use_old_weight .and. self%weight_file == "") &
@@ -508,6 +512,11 @@ contains
         self%block%localnugget = 0.0
       end if
     end associate
+    if (self%varying_vgm) then
+      allocate(self%vgm(self%ivar0:self%nvar, self%ivar0:self%nvar, self%block%n))
+    else
+      allocate(self%vgm(self%ivar0:self%nvar, self%ivar0:self%nvar, 1))
+    end if
   end subroutine set_grid
 
 
@@ -553,17 +562,26 @@ contains
   !   a_minor1 : range along first minor direction  (default: a_major)
   !   a_minor2 : range along second minor direction (default: a_minor1)
   !   azimuth, dip, plunge : rotation angles in degrees (default: 0)
+  !   ib       : block index (default: all blocks); if ib is not present,
+  !               the structure is applied to all blocks
   !============================================================================
-  subroutine set_vgm(self, ivar, jvar, vtype, nugget, sill, a_major, a_minor1, a_minor2, azimuth, dip, plunge)
+  subroutine set_vgm(self, ivar, jvar, vtype, nugget, sill, a_major, a_minor1, a_minor2, azimuth, dip, plunge, ib)
     class(t_kriging), intent(inout)    :: self
     integer,          intent(in)       :: ivar, jvar
+    integer, optional,intent(in)       :: ib
     character(*), optional, intent(in) :: vtype
     real,         optional, intent(in) :: nugget, sill, a_major, a_minor1, a_minor2
     real,         optional, intent(in) :: azimuth, dip, plunge
     ! local
     character(len=3) :: vtype_
     real             :: nugget_, sill_, a_major_, a_minor1_, a_minor2_, azimuth_, dip_, plunge_
+    integer          :: ib_, mb, ib0
     character(len=*), parameter :: subname = "t_kriging%set_vgm"
+    if (.not. associated(self%block)) &
+      call kriging_error(subname, 'Call initialize() before set_vgm.')
+    if (self%block%n == 0) &
+      call kriging_error(subname, 'Grid needs to be set before adding variogram.')
+
     vtype_    = 'sph'    ; if (present(vtype   )) vtype_ = 'sph'
     nugget_   = 0.0      ; if (present(nugget  )) nugget_ = nugget
     sill_     = 1.0      ; if (present(sill    )) sill_ = sill
@@ -574,16 +592,25 @@ contains
     dip_      = 0.0      ; if (present(dip     )) dip_ = dip
     plunge_   = 0.0      ; if (present(plunge  )) plunge_ = plunge
 
-
-    if (jvar == ivar) then
-      call self%vgm(jvar, ivar)%add_args(trim(vtype_), nugget_, sill_, a_major_, a_minor1_, a_minor2_, azimuth_, dip_, plunge_)
-    else if (jvar > ivar) then
-      !-- Fill both triangle entries (cross-variogram is symmetric)
-      call self%vgm(jvar, ivar)%add_args(trim(vtype_), nugget_, sill_, a_major_, a_minor1_, a_minor2_, azimuth_, dip_, plunge_)
-      call self%vgm(ivar, jvar)%add_args(trim(vtype_), nugget_, sill_, a_major_, a_minor1_, a_minor2_, azimuth_, dip_, plunge_)
+    if (present(ib)) then
+      ib0 = ib
+      mb = ib
     else
-      call kriging_error(subname, 'jvar must be >= ivar to set the upper triangle of the variogram matrix')
+      ib0 = 1
+      mb= size(self%vgm, 3)
     end if
+
+    do ib_ = ib0, mb
+      if (jvar == ivar) then
+        call self%vgm(jvar, ivar, ib_)%add_args(trim(vtype_), nugget_, sill_, a_major_, a_minor1_, a_minor2_, azimuth_, dip_, plunge_)
+      else if (jvar > ivar) then
+        !-- Fill both triangle entries (cross-variogram is symmetric)
+        call self%vgm(jvar, ivar, ib_)%add_args(trim(vtype_), nugget_, sill_, a_major_, a_minor1_, a_minor2_, azimuth_, dip_, plunge_)
+        call self%vgm(ivar, jvar, ib_)%add_args(trim(vtype_), nugget_, sill_, a_major_, a_minor1_, a_minor2_, azimuth_, dip_, plunge_)
+      else
+        call kriging_error(subname, 'jvar must be >= ivar to set the upper triangle of the variogram matrix')
+      end if
+    end do
   end subroutine set_vgm
 
 
@@ -876,6 +903,7 @@ contains
         self%inear(:,ivar) = self%inear(:, 0)
       end do
     end associate
+    self%vgm => krige%vgm(:,:,1)
   end subroutine initialize_kriging_ctx
 
 
@@ -896,7 +924,8 @@ contains
   !============================================================================
   subroutine prepare(self)
     class(t_kriging) :: self
-    integer          :: ivar, jvar
+    ! local
+    integer          :: ivar, jvar, ib, mb
     character(len=*), parameter :: subname = "t_kriging%prepare"
 
 
@@ -909,12 +938,8 @@ contains
           call kriging_error(subname, 'Observation drift is not set while ndrift > 0.')
       end do
     end if
-    do ivar = 1, self%nvar
-      do jvar = 1, self%nvar
-        if (.not. self%vgm(jvar, ivar)%is_valid()) &
-          call kriging_error(subname, 'Variogram is not set.')
-      end do
-    end do
+
+    call self%validate_vgm()
     if (self%nsim > 0 .and. size(self%obs(1)%coord, 2) == self%obs(1)%n) &
       call kriging_error(subname, 'set_sim() needs to be called before solve().')
 
@@ -940,10 +965,13 @@ contains
       !   covariances between observation and previously simulated blocks
       !   use the same model as covariances between observations
       if (self%nsim > 0) then
-        self%vgm(0, 0) = self%vgm(1, 1)
-        do ivar = 1, self%nvar
-          self%vgm(0, ivar) = self%vgm(1, ivar)
-          self%vgm(ivar, 0) = self%vgm(ivar, 1)
+        mb = merge(self%block%n, 1, self%varying_vgm)
+        do ib = 1, mb
+          self%vgm(0, 0, ib) = self%vgm(1, 1, ib)
+          do ivar = 1, self%nvar
+            self%vgm(0, ivar, ib) = self%vgm(1, ivar, ib)
+            self%vgm(ivar, 0, ib) = self%vgm(ivar, 1, ib)
+          end do
         end do
       end if
     end associate
@@ -1000,14 +1028,16 @@ contains
 
       !$OMP DO SCHEDULE(DYNAMIC, 1)
       do ib = 1, nb
-        ctx%iblock = ib
         !-- Progress bar: only the last thread prints to avoid interleaved output
 #ifdef _OPENMP
         if (verbose .and. omp_get_thread_num() == omp_get_num_threads()-1) call progress(ib, nb)
 #else
         if (verbose) call progress(ib, nb)
 #endif
+        ctx%iblock = ib
 
+        !-- Point ctx%vgm at this block's variogram slice (thread-private).
+        if (self%varying_vgm) ctx%vgm => self%vgm(:,:,ib)
         if (self%use_old_weight) then
           !-- Factor-file path: read pre-computed weights, skip the solve
           call self%read_weight(ctx)
@@ -1234,7 +1264,7 @@ contains
       ! RHS mode: covariance between each neighbour and the block to estimate
       !------------------------------------------------------------------------
       if (jvar == -1) then
-        associate(vgm => self%vgm(1, ivar))
+        associate(vgm => ctx%vgm(1, ivar))
           do i = 1, nnear
             tmp = 0.0
             k1 = self%block%iblockpnt(ctx%iblock) - 1
@@ -1254,7 +1284,7 @@ contains
         associate( &
           nnear2 => ctx%nnear(jvar), &
           inear2 => ctx%inear(1:ctx%nnear(jvar), jvar), &
-          vgm    => self%vgm(jvar, ivar))
+          vgm    => ctx%vgm(jvar, ivar))
 
           if (jvar == 0) then
             obs2 => self%block
@@ -1495,7 +1525,7 @@ contains
 
       !-- Kriging variance: sigma^2 = C(0) - lambda^T * c0
       associate( &
-        vgm        => self%vgm(1, 1), &
+        vgm        => ctx%vgm(1, 1), &
         var        => self%block%variance(iblock), &
         weight     => self%grid%weight, &
         coord      => self%grid%coord, &
@@ -1720,9 +1750,9 @@ function to_str(self) result(res_str)
     do ivar = 1, self%nvar
         do jvar = 1, self%nvar
             if (ivar == jvar) then
-                write(buffer, "(A,I0,A,I0,A)") " Model for Variable ", ivar, self%vgm(jvar, ivar)%tostr()
+                write(buffer, "(A,I0,A,I0,A)") " Model for Variable ", ivar, self%vgm(jvar, ivar, 1)%tostr()
             else
-                write(buffer, "(A,I0,A,I0,A)") " Model between Variable ", ivar, " and ", jvar, self%vgm(jvar, ivar)%tostr()
+                write(buffer, "(A,I0,A,I0,A)") " Model between Variable ", ivar, " and ", jvar, self%vgm(jvar, ivar, 1)%tostr()
             end if
             res_str = res_str // trim(buffer) // NL
         end do
@@ -1870,6 +1900,41 @@ end subroutine update_info
       read(self%ifile, *) (ctx%weight(1:ctx%nnear(ii), ii), ii = 0, self%nvar)
     end associate
   end subroutine read_weight
+
+
+  !============================================================================
+  ! validate_vgm  (private helper)
+  !
+  ! Verify that every block/variable-pair has at least one structure defined.
+  ! Stops with a descriptive error if any block is missing its variogram.
+  !============================================================================
+  subroutine validate_vgm(self)
+    class(t_kriging), intent(in) :: self
+    integer                  :: ib, iv, jv, mb
+    character(len=256)       :: msg
+    character(*), parameter  :: subname = 't_kriging_sva%validate_vgm'
+    mb = merge(self%block%n, 1, self%varying_vgm)
+    do ib = 1, mb
+      do iv = self%ivar0, self%nvar
+        do jv = self%ivar0, self%nvar
+          if (self%vgm(jv, iv, ib)%nstruct == 0) then
+            write(msg, '(A,I0,A,I0,A,I0,A)') &
+              't_kriging_sva: variogram not set for block ', ib, &
+              ', ivar=', iv, ', jvar=', jv, &
+              '. Call set_vgm_block() or set_vgm_block_all().'
+            call kriging_error(subname, trim(msg))
+            if (.not. self%vgm(jv, iv, ib)%is_valid()) then
+              write(msg, '(A,I0,A,I0,A,I0,A)') &
+                't_kriging_sva: variogram is not valid for block ', ib, &
+                ', ivar=', iv, ', jvar=', jv, &
+                '. Check your variogram parameters.'
+              call kriging_error(subname, trim(msg))
+            end if
+          end if
+        end do
+      end do
+    end do
+  end subroutine validate_vgm
 
 
   !============================================================================

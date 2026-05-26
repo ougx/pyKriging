@@ -15,8 +15,8 @@ Then use this module:
 
     k = Kriging(ndim=2, nvar=1)
     k.set_obs(ivar=1, coord=coord, value=value, nmax=20)
-    k.set_vgm(ivar=1, jvar=1, vtype="sph", nugget=0, sill=1.0, a_major=1000, a_minor1=500, a_minor2=500)
     k.set_grid(coord=grid_coord)
+    k.set_vgm(ivar=1, jvar=1, vtype="sph", nugget=0, sill=1.0, a_major=1000, a_minor1=500, a_minor2=500)
     k.set_search(ivar=1)
     k.solve()
     est, var = k.get_results()
@@ -100,7 +100,9 @@ _krige_destroy     = _cfun("krige_destroy",     [_ptr_int64])
 _krige_initialize  = _cfun("krige_initialize",  [
     ctypes.c_int64,                              # handle
     _c_int, _c_int, _c_int, _c_int, _c_int,     # ndim, nvar, ndrift, unbias, nsim
-    _c_int, _c_int, _c_int, _c_int, _c_int, _c_int, _c_int, _c_int,  # flags (8 booleans as int)
+    # flags: anisotropic_search, weight_correction, use_old_weight, store_weight,
+    #        cross_validation, write_mat, neglect_error, varying_vgm, verbose  (9 booleans as int)
+    _c_int, _c_int, _c_int, _c_int, _c_int, _c_int, _c_int, _c_int, _c_int,
     _c_char_p,                                   # weight_file
     _ptr_dbl,                                    # bounds[2]
     _c_double,                                   # sk_mean
@@ -120,6 +122,14 @@ _krige_set_obs_drift = _cfun("krige_set_obs_drift", [
 _krige_set_vgm     = _cfun("krige_set_vgm",  [
     ctypes.c_int64,                              # handle
     _c_int, _c_int,                              # ivar, jvar
+    _c_char_p,                                   # vtype (null-terminated)
+    _c_double, _c_double,                        # nugget, sill
+    _c_double, _c_double, _c_double,             # a_major, a_minor1, a_minor2
+    _c_double, _c_double, _c_double,             # azimuth, dip, plunge
+])
+_krige_set_vgm_block = _cfun("krige_set_vgm_block", [
+    ctypes.c_int64,                              # handle
+    _c_int, _c_int, _c_int,                      # ivar, jvar, ib
     _c_char_p,                                   # vtype (null-terminated)
     _c_double, _c_double,                        # nugget, sill
     _c_double, _c_double, _c_double,             # a_major, a_minor1, a_minor2
@@ -279,8 +289,8 @@ class Kriging:
     ----------------
     >>> k = Kriging(ndim=2, nvar=1)
     >>> k.set_obs(ivar=1, coord=obs_coord, value=obs_value, nmax=20)
-    >>> k.set_vgm(ivar=1, jvar=1, vtype="sph", nugget=0, sill=1.0, a_major=1000, a_minor1=500, a_minor2=50)
     >>> k.set_grid(coord=grid_coord)
+    >>> k.set_vgm(ivar=1, jvar=1, vtype="sph", nugget=0, sill=1.0, a_major=1000, a_minor1=500, a_minor2=50)
     >>> k.set_search(ivar=1)
     >>> k.solve()
     >>> estimate, variance = k.get_results()
@@ -304,6 +314,7 @@ class Kriging:
         cross_validation: bool = False,
         write_mat: bool = False,
         neglect_error: bool = True,
+        varying_vgm: bool = False,
         verbose: bool = False,
         weight_file: str = "",
         bounds: Optional[tuple] = None,
@@ -338,6 +349,10 @@ class Kriging:
             Write matrix for debugging.
         neglect_error : bool
             Ignore solver errors and set failed block to NaN instead of aborting.
+        varying_vgm : bool
+            Use a different variogram per estimation block (spatially varying
+            anisotropy).  When True, call :meth:`set_vgm_block` for each block
+            after :meth:`set_grid`.  Defaults to False (single global model).
         verbose : bool
             Print progress messages.
         weight_file : str
@@ -379,6 +394,7 @@ class Kriging:
             _c_int(int(cross_validation)),
             _c_int(int(write_mat)),
             _c_int(int(neglect_error)),
+            _c_int(int(varying_vgm)),
             _c_int(int(verbose)),
             weight_file.encode("utf-8") if weight_file else b"",
             _dptr(c_bounds),
@@ -400,6 +416,7 @@ class Kriging:
         self.store_weight = store_weight
         self.cross_validation = cross_validation
         self.write_mat = write_mat
+        self.varying_vgm = varying_vgm
         self.weight_file = weight_file
         self.bounds = c_bounds
         self.sk_mean = sk_mean
@@ -540,6 +557,57 @@ class Kriging:
             a_minor2 = a_minor1
         _krige_set_vgm(_h(self._handle),
             _c_int(ivar), _c_int(jvar),
+            vtype.encode("utf-8"),
+            nugget, sill, a_major, a_minor1, a_minor2,
+            azimuth, dip, plunge,
+        )
+
+    # ------------------------------------------------------------------
+    def set_vgm_block(
+        self, ib: int, ivar: int, jvar: int, vtype: str,
+        nugget: float = 0.0, sill: float = 1.0,
+        a_major: float = 1.0,
+        a_minor1: Optional[float] = None,
+        a_minor2: Optional[float] = None,
+        azimuth: float = 0.0, dip: float = 0.0, plunge: float = 0.0,
+    ):
+        """
+        Add one nested variogram structure for a *specific block* ``ib``.
+
+        Requires ``varying_vgm=True`` in the constructor and :meth:`set_grid`
+        to have been called first (because the number of blocks must be known
+        before the per-block variogram array can be allocated in Fortran).
+
+        Call multiple times for the same ``ib`` to build a nested model.
+
+        Parameters
+        ----------
+        ib : int
+            Block index (1-based).
+        ivar, jvar : int
+            Variable indices (1-based).
+        vtype : str
+            Variogram type: ``sph``, ``exp``, ``gau``, ``pow``, ``lin``,
+            ``hol``, ``bsq``, ``cir``, or ``nug``.
+        nugget : float
+            Nugget contribution (default 0).
+        sill : float
+            Partial sill (default 1).
+        a_major : float
+            Range along the major axis (default 1).
+        a_minor1 : float, optional
+            First minor-axis range (defaults to ``a_major``).
+        a_minor2 : float, optional
+            Second minor-axis range (defaults to ``a_minor1``).
+        azimuth, dip, plunge : float
+            Rotation angles in degrees (default 0).
+        """
+        if a_minor1 is None:
+            a_minor1 = a_major
+        if a_minor2 is None:
+            a_minor2 = a_minor1
+        _krige_set_vgm_block(_h(self._handle),
+            _c_int(ivar), _c_int(jvar), _c_int(ib),
             vtype.encode("utf-8"),
             nugget, sill, a_major, a_minor1, a_minor2,
             azimuth, dip, plunge,
@@ -907,9 +975,9 @@ def ordinary_kriging(
     k = Kriging(ndim=ndim, nvar=1)
     k.set_obs(ivar=1, coord=obs_coord, value=obs_value,
               nmax=nmax, maxdist=maxdist)
+    k.set_grid(coord=grid_coord, rangescale=rangescale, localnugget=localnugget)
     for spec in ([vgm_spec] if isinstance(vgm_spec, dict) else list(vgm_spec)):
         k.set_vgm(ivar=1, jvar=1, **spec)
-    k.set_grid(coord=grid_coord, rangescale=rangescale, localnugget=localnugget)
     k.set_search(ivar=1, anis1=search_anis1, anis2=search_anis2,
                  azimuth=search_azimuth)
     k.solve()
@@ -969,11 +1037,11 @@ def cokriging(
     for i, (coord, value) in enumerate(zip(obs_coords, obs_values), start=1):
         k.set_obs(ivar=i, coord=coord, value=value, nmax=nmax)
 
+    k.set_grid(coord=grid_coord, rangescale=rangescale, localnugget=localnugget)
+
     for (iv, jv), spec in vgm_spec.items():
         for s in ([spec] if isinstance(spec, dict) else list(spec)):
             k.set_vgm(ivar=iv, jvar=jv, **s)
-
-    k.set_grid(coord=grid_coord, rangescale=rangescale, localnugget=localnugget)
 
     for i in range(1, nvar + 1):
         k.set_search(ivar=i)
@@ -1027,9 +1095,9 @@ def sequential_gaussian_simulation(
 
     k = Kriging(ndim=ndim, nvar=1, nsim=nsim, seed=seed)
     k.set_obs(ivar=1, coord=obs_coord, value=obs_value, nmax=nmax)
+    k.set_grid(coord=grid_coord, rangescale=rangescale, localnugget=localnugget)
     for spec in ([vgm_spec] if isinstance(vgm_spec, dict) else list(vgm_spec)):
         k.set_vgm(ivar=1, jvar=1, **spec)
-    k.set_grid(coord=grid_coord, rangescale=rangescale, localnugget=localnugget)
     # set_sim with no args: Python generates random path and N(0,1) samples
     k.set_sim(randpath, sample)
     k.set_search(ivar=1)

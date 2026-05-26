@@ -96,15 +96,18 @@ contains
   !   store_weight       : 0/1 write weights to weight_file
   !   cross_validation   : 0/1 leave-one-out cross-validation mode
   !   write_mat          : 0/1 write the matrix for debugging
+  !   neglect_error      : 0/1 set NaN instead of stopping on singular matrix
+  !   varying_vgm        : 0/1 use a different variogram per estimation block
   !   verbose            : 0/1 print progress messages
   !   weight_file        : null-terminated path (empty string when not used)
   !   bounds             : [lower, upper] clipping bounds for the estimate
   !   sk_mean            : global mean for simple kriging (unbias=0)
+  !   seed               : random seed for SGSIM (0 = use clock)
   !=============================================================================
   subroutine krige_initialize(handle, &
       ndim, nvar, ndrift, unbias, nsim, &
       anisotropic_search, weight_correction, use_old_weight, &
-      store_weight, cross_validation, write_mat, neglect_error, verbose, &
+      store_weight, cross_validation, write_mat, neglect_error, varying_vgm, verbose, &
       weight_file, bounds, sk_mean, seed) &
       bind(C, name='krige_initialize')
 
@@ -112,7 +115,8 @@ contains
     integer(c_int),      intent(in), value :: ndim, nvar, ndrift, unbias, nsim, seed
     integer(c_int),      intent(in), value :: anisotropic_search, weight_correction
     integer(c_int),      intent(in), value :: use_old_weight, store_weight
-    integer(c_int),      intent(in), value :: cross_validation, write_mat, neglect_error, verbose
+    integer(c_int),      intent(in), value :: cross_validation, write_mat, neglect_error
+    integer(c_int),      intent(in), value :: varying_vgm, verbose
     character(kind=c_char), intent(in) :: weight_file(*)
     real(c_double),      intent(in) :: bounds(2)
     real(c_double),      intent(in), value :: sk_mean
@@ -140,6 +144,7 @@ contains
       cross_validation   = l(cross_validation), &
       write_mat          = l(write_mat), &
       neglect_error      = l(neglect_error), &
+      varying_vgm        = l(varying_vgm), &
       verbose            = l(verbose), &
       weight_file        = c2fstr(weight_file), &
       bounds             = fbounds, &
@@ -245,6 +250,51 @@ contains
                      real(a_minor1), real(a_minor2), &
                      real(azimuth), real(dip), real(plunge))
   end subroutine krige_set_vgm
+
+  !=============================================================================
+  ! krige_set_vgm_block
+  !
+  ! Add one nested variogram structure for block ib and variable pair
+  ! (ivar, jvar).  Requires varying_vgm=1 to have been passed to
+  ! krige_initialize and set_grid to have been called before set_vgm.
+  ! Call multiple times per block to build composite (nested) models.
+  !
+  ! Parameters
+  !   ivar, jvar : variable indices, 1-based
+  !   ib         : block index, 1-based
+  !   vtype      : null-terminated variogram type: sph exp gau pow lin hol bsq cir nug
+  !   nugget     : nugget contribution of this structure
+  !   sill       : partial sill
+  !   a_major    : range along principal direction
+  !   a_minor1   : range along first minor direction
+  !   a_minor2   : range along second minor direction
+  !   azimuth, dip, plunge : rotation angles in degrees
+  !=============================================================================
+  subroutine krige_set_vgm_block(handle, ivar, jvar, ib, vtype, &
+                                  nugget, sill, a_major, a_minor1, a_minor2, &
+                                  azimuth, dip, plunge) &
+      bind(C, name='krige_set_vgm_block')
+
+    integer(c_intptr_t), intent(in), value :: handle
+    integer(c_int),      intent(in), value :: ivar, jvar, ib
+    character(kind=c_char), intent(in) :: vtype(*)
+    real(c_double), intent(in), value :: nugget, sill, a_major, a_minor1, a_minor2
+    real(c_double), intent(in), value :: azimuth, dip, plunge
+
+    type(t_kriging), pointer :: obj
+    call get_obj(handle, obj)
+    call obj%set_vgm(int(ivar), int(jvar), &
+                     vtype   = c2fstr(vtype), &
+                     nugget  = real(nugget), &
+                     sill    = real(sill), &
+                     a_major = real(a_major), &
+                     a_minor1= real(a_minor1), &
+                     a_minor2= real(a_minor2), &
+                     azimuth = real(azimuth), &
+                     dip     = real(dip), &
+                     plunge  = real(plunge), &
+                     ib      = int(ib))
+  end subroutine krige_set_vgm_block
 
   !=============================================================================
   ! krige_set_grid

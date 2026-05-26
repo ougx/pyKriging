@@ -8,6 +8,8 @@ OpenMP and supports:
 - **Co-kriging** (multiple variables, Linear Model of Coregionalisation)
 - **Universal kriging** (external drift / KED)
 - **Sequential Gaussian Simulation** (SGSIM) with reproducible paths and samples
+- **Space-time kriging** — sum-metric and product-sum ST covariance models
+- **Spatially Varying Anisotropy (SVA)** — different variogram per estimation block
 - **Cross-validation** (leave-one-out)
 - **Anisotropic search** and **per-block variogram scaling**
 
@@ -90,11 +92,11 @@ est, var = ordinary_kriging(
 print(est.shape, var.shape)   # (25,) (25,)
 
 # --- Full class interface ---
+# Important: call must be used in this order, i.e. set_obs(), set_grid(), set_vgm(), set_search(), solve()
 k = Kriging(ndim=2, nvar=1)
-k.set_vgm(ivar=1, jvar=1, vtype="sph", nugget=0.0, sill=1.0, a_major=1.0, a_minor1=0.8)
 k.set_obs(ivar=1, coord=obs_coord, value=obs_value, nmax=5)
 k.set_grid(coord=grid_coord)
-k.set_sim()
+k.set_vgm(ivar=1, jvar=1, vtype="sph", nugget=0.0, sill=1.0, a_major=1.0, a_minor1=0.8)
 k.set_search(ivar=1)
 k.solve()
 est, var = k.get_results()
@@ -118,7 +120,11 @@ drift      = np.array([[d1a,d1b], [d2a,d2b], ...])  # shape (nobs, ndrift)
 
 ## Variogram parameters
 
-Variograms are specified via keyword arguments to `set_vgm`:
+Variograms are specified via keyword arguments to `set_vgm`.
+
+> **Call order**: `set_grid()` (or `set_grid_block()` / `set_grid_cv()`) must be called
+> **before** `set_vgm()`.  The Fortran engine allocates the variogram storage when
+> the grid is set, so the number of blocks must be known first.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
@@ -135,6 +141,8 @@ Variograms are specified via keyword arguments to `set_vgm`:
 Call `set_vgm` multiple times to build a composite (nested) model:
 
 ```python
+k.set_obs(...)
+k.set_grid(...)                                                           # must come first
 k.set_vgm(1, 1, vtype="sph", nugget=100.0, sill=400.0, a_major=1000, a_minor1=500)  # structure 1
 k.set_vgm(1, 1, vtype="exp", nugget=0.0,   sill=500.0, a_major=500,  a_minor1=300)  # structure 2
 ```
@@ -176,6 +184,189 @@ sims = sequential_gaussian_simulation(
 )
 ensemble_mean = sims.mean(axis=0)
 ```
+
+---
+
+## Space-Time Kriging
+
+`SpaceTimeKriging` (and its convenience wrappers `spacetime_kriging` /
+`spacetime_cokriging`) handles datasets where each observation has both a
+3-D spatial location **and** a time stamp.  The engine supports two joint
+space-time covariance models:
+
+| Model | Description |
+|-------|-------------|
+| `sum_metric` | Weighted sum of a pure-spatial, a pure-temporal, and a joint component. Requires `joint_sills`. |
+| `product_sum` | Product of spatial and temporal marginals plus a sum correction. Requires `k_ps`. |
+
+### Coordinate convention
+
+| Array | Shape | Description |
+|-------|-------|-------------|
+| `coord` (obs/grid) | **(n, 3)** | Rows are points; columns are x, y, z |
+| `time` (obs/grid) | **(n,)** | Any consistent unit (decimal years, days, …) |
+
+### Workflow
+
+```python
+from pykriging import SpaceTimeKriging
+
+k = SpaceTimeKriging(nvar=1)
+
+# 1 — choose ST covariance model (must come before set_vgm)
+k.set_st_model(model="sum_metric", transform="bounded", at=5.0)
+
+# 2 — load observations: coord shape (nobs, 3), time shape (nobs,)
+k.set_obs(ivar=1, coord=obs_coord, value=obs_value, time=obs_time,
+          nmax=30, maxdist=5000.0, maxtlag=20.0)
+
+# 3 — spatial variogram (call multiple times for nested structures)
+k.set_vgm(ivar=1, jvar=1, vtype="sph",
+          nugget=0.0, sill=0.8, a_major=1000, a_minor1=500, a_minor2=200)
+
+# 4 — temporal variogram (one call per nested structure)
+k.set_vgm_temporal(ivar=1, jvar=1, vtype="exp",
+                   nugget=0.0, sill=0.6, at_k=10.0)
+
+# 5 — joint sills (sum-metric only; one float per spatial nested structure)
+k.set_vgm_joint_sills(ivar=1, jvar=1, 0.4)
+
+# 6 — estimation targets: coord shape (ngrid, 3), time shape (ngrid,)
+k.set_grid(coord=grid_coord, time=grid_time)
+
+# 7 — build KD-tree
+k.set_search(ivar=1)
+
+# 8 — run and retrieve
+k.solve()
+estimate, variance = k.get_results()   # shapes (ngrid,), (ngrid,)
+del k
+```
+
+### `set_st_model` parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `model` | `"sum_metric"` | `"sum_metric"` or `"product_sum"` |
+| `transform` | `"linear"` | How temporal lag enters the joint distance: `"linear"` → `|dt|/at`; `"bounded"` → `1 − exp(−|dt|/at)`; `"power"` → `(|dt|/at)^alpha` |
+| `at` | `1.0` | Joint temporal scale (same units as the time arrays) |
+| `alpha` | `1.0` | Power exponent (only used when `transform="power"`) |
+| `k_ps` | `0.0` | Product-sum coefficient k (only used when `model="product_sum"`) |
+
+### `set_vgm_temporal` parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `vtype` | *(required)* | Variogram type (same types as spatial: `sph`, `exp`, `gau`, …) |
+| `nugget` | `0.0` | Nugget contribution |
+| `sill` | `1.0` | Partial sill |
+| `at_k` | `1.0` | Temporal practical range (same time units as observations) |
+
+### One-shot convenience function
+
+```python
+from pykriging import spacetime_kriging
+
+est, var = spacetime_kriging(
+    obs_coord   = obs_coord,        # (nobs, 3)
+    obs_value   = obs_value,        # (nobs,)
+    obs_time    = obs_time,         # (nobs,)
+    grid_coord  = grid_coord,       # (ngrid, 3)
+    grid_time   = grid_time,        # (ngrid,)
+    spatial_spec  = dict(vtype="sph", nugget=0.0, sill=0.8,
+                         a_major=1000, a_minor1=500, a_minor2=200),
+    temporal_spec = dict(vtype="exp", nugget=0.0, sill=0.6, at_k=10.0),
+    joint_sills   = [0.4],          # one per spatial nested structure
+    model="sum_metric", transform="bounded", at=5.0,
+    nmax=30, maxdist=5000.0, maxtlag=20.0,
+)
+```
+
+### Space-time co-kriging
+
+```python
+from pykriging import spacetime_cokriging
+
+est, var = spacetime_cokriging(
+    obs_coords  = [coord1, coord2],
+    obs_values  = [value1, value2],
+    obs_times   = [time1,  time2],
+    grid_coord  = grid_coord,
+    grid_time   = grid_time,
+    spatial_specs  = {
+        (1,1): dict(vtype="sph", nugget=0.0, sill=1.0, a_major=1000),
+        (2,2): dict(vtype="sph", nugget=0.0, sill=1.0, a_major=1000),
+        (1,2): dict(vtype="sph", nugget=0.0, sill=0.7, a_major=1000),
+    },
+    temporal_specs = {
+        (1,1): dict(vtype="exp", nugget=0.0, sill=0.8, at_k=10.0),
+        (2,2): dict(vtype="exp", nugget=0.0, sill=0.8, at_k=10.0),
+        (1,2): dict(vtype="exp", nugget=0.0, sill=0.6, at_k=10.0),
+    },
+    joint_sills = {(1,1): [0.4], (2,2): [0.4], (1,2): [0.3]},
+    model="sum_metric", transform="bounded", at=5.0,
+    nmax=20,
+)
+```
+
+---
+
+## Spatially Varying Anisotropy (SVA)
+
+When the spatial structure of the data changes across the domain (e.g.
+channelised geological units, anisotropy that rotates with depth), you can
+assign a **different variogram to each estimation block**.
+
+### `varying_vgm` flag
+
+Pass `varying_vgm=True` to the constructor.  The Fortran engine then allocates
+one variogram slot per block instead of a single global model.  The
+OMP-parallel block loop automatically uses each block's own variogram — no
+shared state is modified inside the parallel region.
+
+```python
+from pykriging import Kriging
+
+k = Kriging(ndim=2, nvar=1, varying_vgm=True)
+k.set_obs(ivar=1, coord=obs_coord, value=obs_value, nmax=20)
+k.set_grid(coord=grid_coord)          # allocates one variogram slot per block
+
+# Assign a variogram to every block individually:
+for ib in range(1, nblocks + 1):
+    azimuth = local_azimuth[ib - 1]   # block-specific rotation, for example
+    k.set_vgm_block(ib=ib, ivar=1, jvar=1, vtype="sph",
+                    nugget=0.0, sill=1.0, a_major=800, a_minor1=400,
+                    azimuth=azimuth)
+
+k.set_search(ivar=1)
+k.solve()
+est, var = k.get_results()
+```
+
+`set_vgm_block` accepts the same keyword arguments as `set_vgm` plus the block
+index `ib` (1-based).  Call it multiple times for the same `ib` to build a
+nested model for that block.
+
+### `set_vgm` with a single model applied to all blocks
+
+If you want a single spec assigned to *all* blocks (e.g. as a starting point
+before overriding specific blocks), use plain `set_vgm` without `ib` — it fills
+every block slot:
+
+```python
+k = Kriging(ndim=2, nvar=1, varying_vgm=True)
+k.set_obs(...)
+k.set_grid(...)
+k.set_vgm(ivar=1, jvar=1, vtype="sph", nugget=0.0, sill=1.0, a_major=1000)  # all blocks
+# then override individual blocks:
+k.set_vgm_block(ib=5, ivar=1, jvar=1, vtype="exp", nugget=0.1, sill=0.9, a_major=400)
+```
+
+### `Kriging.__init__` parameters related to SVA
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `varying_vgm` | `bool` | `False` | Enable per-block variogram storage.  Must be `True` to use `set_vgm_block`. |
 
 ---
 
