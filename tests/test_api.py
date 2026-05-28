@@ -28,7 +28,7 @@ class TestInputValidation:
         value = np.random.rand(10)
         grid  = np.random.rand(5, 2)
         # obs ndim=3 is inferred correctly; grid has ndim=2 which mismatches
-        with pytest.raises(AssertionError, match="ndim=3"):
+        with pytest.raises(RuntimeError, match="ndim"):
             ordinary_kriging(coord, value, grid, _VGM, nmax=5)
 
     def test_coord_transposed_raises(self):
@@ -155,13 +155,13 @@ class TestDrift:
         assert np.all(est > 0), "Hydraulic head estimates should be positive"
 
     def test_obs_drift_wrong_shape_raises(self, head2d_obs):
-        """set_obs_drift with wrong ndrift column count should be caught on Python side."""
+        """set_obs_drift with wrong ndrift column count should be reported by Fortran ierr."""
         coord, value = head2d_obs
         k = Kriging(ndim=2, nvar=1, ndrift=2, unbias=0)
         k.set_obs(ivar=1, coord=coord, value=value, nmax=10)
-        # drift has 3 columns but ndrift=2 was declared — Python shape check should raise
+        # drift has 3 columns but ndrift=2 was declared; Fortran returns ierr.
         wrong_drift = np.ones((coord.shape[0], 3))   # (nobs, 3) but ndrift=2
-        with pytest.raises(AssertionError, match="ndrift=2"):
+        with pytest.raises(RuntimeError, match="size\\(drift, 1\\) /= ndrift"):
         	k.set_obs_drift(ivar=1, drift=wrong_drift)            #"test precondition: wrong_drift must have the wrong number of drift columns"
 
 
@@ -330,5 +330,3 @@ class TestObjectReuse:
         np.testing.assert_allclose(var_two, 2.0 * var_one, rtol=1e-5,
             err_msg="Calling set_vgm twice with same spec must double the total sill "
                     "and therefore double the kriging variance")
-
-

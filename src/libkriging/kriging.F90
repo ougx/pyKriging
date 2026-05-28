@@ -186,12 +186,12 @@ module kriging
     !-- Simple kriging mean (used when unbias=0)
     real                 :: sk_mean = 0.0
 
-    character(kind=c_char), pointer  :: krige_info(:) ! kriging info string
+    character(kind=c_char), pointer  :: krige_info(:) => null() ! kriging info string
     !-- Pointers to the three spatial objects and the variogram matrix
-    type(t_obsgrid)  , pointer :: obs(:)          ! observations  [ivar0:nvar]
-    type(t_grid)     , pointer :: grid            ! integration nodes
-    type(t_blockgrid), pointer :: block           ! estimation targets
-    type(vgm_struct) , pointer :: vgm(:,:,:)      ! variogram models [ivar0:nvar, ivar0:nvar, 1] last dimension can be nblock for spatial varying vgm
+    type(t_obsgrid)  , pointer :: obs(:)     => null() ! observations  [ivar0:nvar]
+    type(t_grid)     , pointer :: grid       => null() ! integration nodes
+    type(t_blockgrid), pointer :: block      => null() ! estimation targets
+    type(vgm_struct) , pointer :: vgm(:,:,:) => null() ! variogram models [ivar0:nvar, ivar0:nvar, 1] last dimension can be nblock for spatial varying vgm
   contains
     procedure :: initialize
     procedure :: set_obs
@@ -244,7 +244,6 @@ module kriging
     real,    allocatable :: x(:,:)           ! raw solver output (weights + multipliers) [1, matsize]
     real,    allocatable :: matA(:,:)        ! covariance matrix C          [matsize, matsize]
     real,    allocatable :: rhsB(:,:)        ! right-hand-side c0           [1, matsize]
-    type(vgm_struct), pointer :: vgm(:,:) => null() ! thread-private variogram slice
   contains
     procedure :: initialize  => initialize_kriging_ctx
     procedure :: assign_weight   ! split x into per-variable weight arrays
@@ -319,16 +318,26 @@ contains
     allocate(self%obs  (self%nvar))
     allocate(self%grid)
     allocate(self%block)
+    if (.not. self%varying_vgm) &
+      allocate(self%vgm(self%ivar0:self%nvar, self%ivar0:self%nvar, 1))
 
     !-- Sanity checks: mutually exclusive flag combinations
-    if (self%use_old_weight .and. self%weight_file == "") &
+    if (self%use_old_weight .and. self%weight_file == "") then
       call kriging_error(subname, 'use_old_weight requires weight_file to be specified')
-    if (self%store_weight .and. self%weight_file == "") &
+      return
+    end if
+    if (self%store_weight .and. self%weight_file == "") then
       call kriging_error(subname, 'store_weight requires weight_file to be specified')
-    if (self%store_weight .and. self%use_old_weight) &
+      return
+    end if
+    if (self%store_weight .and. self%use_old_weight) then
       call kriging_error(subname, 'store_weight and use_old_weight are mutually exclusive')
-    if (self%cross_validation .and. self%nsim > 0) &
+      return
+    end if
+    if (self%cross_validation .and. self%nsim > 0) then
       call kriging_error(subname, 'nsim>0 and cross_validation are mutually exclusive')
+      return
+    end if
   end subroutine initialize
 
 
@@ -380,8 +389,10 @@ contains
     call self%reset_grid()
     call self%reset_block()
 
-    if (self%obs(1)%n == 0) &
+    if (self%obs(1)%n == 0) then
       call kriging_error(subname, 'Observation needs to be set first.')
+      return
+    end if
 
     associate(ndim => self%ndim, ndrift => self%ndrift)
       if (present(block_type)) self%block%block_type = block_type
@@ -408,12 +419,16 @@ contains
         !----------------------------------------------------------------------
         ! Normal path: coord must be provided
         !----------------------------------------------------------------------
-        if (.not. present(coord)) &
+        if (.not. present(coord)) then
           call kriging_error(subname, 'coord needs to be provided.')
+          return
+        end if
 
         !-- validate ndim
-        if (ndim /= size(coord, 1)) &
+        if (ndim /= size(coord, 1)) then
           call kriging_error(subname, 'ndim /= size(coord, 1) for self%grid')
+          return
+        end if
         ngrid = size(coord, 2)
 
         !-- block_type = 0: point kriging; one grid node per block
@@ -427,8 +442,10 @@ contains
 
         !-- block_type = -4: GQ discretisation; blocksize required
         else if (self%block%block_type == -4) then
-          if (.not. present(blocksize)) &
+          if (.not. present(blocksize)) then
             call kriging_error(subname, 'blocksize needs to be provided when block_type=-4.')
+            return
+          end if
           nb = 4**ndim        ! integration points per block (4-point Gauss per dimension)
           self%block%n = ngrid
           allocate(self%block%coord, source = coord)
@@ -514,8 +531,9 @@ contains
       end if
     end associate
     if (self%varying_vgm) then
+      if (associated(self%vgm)) deallocate(self%vgm)
       allocate(self%vgm(self%ivar0:self%nvar, self%ivar0:self%nvar, self%block%n))
-    else
+    else if (.not. associated(self%vgm)) then
       allocate(self%vgm(self%ivar0:self%nvar, self%ivar0:self%nvar, 1))
     end if
   end subroutine set_grid
@@ -534,16 +552,26 @@ contains
     real, intent(in)   :: drift(:,:)   ! drift values [ndrift, nblock]
     character(len=*), parameter :: subname = "t_kriging%set_grid_drift"
 
-    if (.not. associated(self%block)) &
+    if (.not. associated(self%block)) then
       call kriging_error(subname, 'Call initialize() before set_grid_drift.')
-    if (self%block%n == 0) &
+      return
+    end if
+    if (self%block%n == 0) then
       call kriging_error(subname, 'Grid needs to be set before adding drift.')
-    if (self%ndrift == 0) &
+      return
+    end if
+    if (self%ndrift == 0) then
       call kriging_error(subname, 'grid/block drift is specified but ndrift==0')
-    if (size(drift, 1) /= self%ndrift) &
+      return
+    end if
+    if (size(drift, 1) /= self%ndrift) then
       call kriging_error(subname, 'size(drift, 1) /= ndrift')
-    if (size(drift, 2) /= self%block%n) &
+      return
+    end if
+    if (size(drift, 2) /= self%block%n) then
       call kriging_error(subname, 'size(drift, 2) /= block%n; one drift value per block, not per grid node')
+      return
+    end if
     allocate(self%block%drift, source = drift)
   end subroutine set_grid_drift
 
@@ -578,10 +606,18 @@ contains
     real             :: nugget_, sill_, a_major_, a_minor1_, a_minor2_, azimuth_, dip_, plunge_
     integer          :: ib_, mb, ib0
     character(len=*), parameter :: subname = "t_kriging%set_vgm"
-    if (.not. associated(self%block)) &
+    if (.not. associated(self%block)) then
       call kriging_error(subname, 'Call initialize() before set_vgm.')
-    if (self%varying_vgm .and. self%block%n==0) &
-        call kriging_error(subname, 'Grid needs to be set before adding variogram under varying_vgm mode.')
+      return
+    end if
+    if (self%varying_vgm .and. self%block%n==0) then
+      call kriging_error(subname, 'Grid needs to be set before adding variogram under varying_vgm mode.')
+      return
+    end if
+    if (.not. associated(self%vgm)) then
+      call kriging_error(subname, 'Variogram storage is not allocated. Call initialize() first.')
+      return
+    end if
     vtype_    = 'sph'    ; if (present(vtype   )) vtype_ = 'sph'
     nugget_   = 0.0      ; if (present(nugget  )) nugget_ = nugget
     sill_     = 1.0      ; if (present(sill    )) sill_ = sill
@@ -608,12 +644,16 @@ contains
     do ib_ = ib0, mb
       if (jvar == ivar) then
         call self%vgm(jvar, ivar, ib_)%add_args(trim(vtype_), nugget_, sill_, a_major_, a_minor1_, a_minor2_, azimuth_, dip_, plunge_)
+        if (kriging_failed()) return
       else if (jvar > ivar) then
         !-- Fill both triangle entries (cross-variogram is symmetric)
         call self%vgm(jvar, ivar, ib_)%add_args(trim(vtype_), nugget_, sill_, a_major_, a_minor1_, a_minor2_, azimuth_, dip_, plunge_)
+        if (kriging_failed()) return
         call self%vgm(ivar, jvar, ib_)%add_args(trim(vtype_), nugget_, sill_, a_major_, a_minor1_, a_minor2_, azimuth_, dip_, plunge_)
+        if (kriging_failed()) return
       else
         call kriging_error(subname, 'jvar must be >= ivar to set the upper triangle of the variogram matrix')
+        return
       end if
     end do
   end subroutine set_vgm
@@ -650,8 +690,10 @@ contains
       if (ndim == 0) then
         ndim = size(coord, 1)
       else
-        if (ndim /= size(coord, 1)) &
+        if (ndim /= size(coord, 1)) then
           call kriging_error(subname, 'ndim /= size(coord, 1) for grid')
+          return
+        end if
       end if
       obs%n = size(coord, 2)
 
@@ -694,16 +736,26 @@ contains
     real,    intent(in) :: drift(:,:)   ! [ndrift, nobs]
     character(len=*), parameter :: subname = "t_kriging%set_obs_drift"
 
-    if (.not. associated(self%obs)) &
+    if (.not. associated(self%obs)) then
       call kriging_error(subname, 'Call initialize() before set_obs_drift.')
-    if (self%obs(ivar)%n == 0) &
+      return
+    end if
+    if (self%obs(ivar)%n == 0) then
       call kriging_error(subname, 'Observation needs to be set before adding drift.')
-    if (self%ndrift == 0) &
+      return
+    end if
+    if (self%ndrift == 0) then
       call kriging_error(subname, 'Observation drift is specified but ndrift==0')
-    if (size(drift, 1) /= self%ndrift) &
+      return
+    end if
+    if (size(drift, 1) /= self%ndrift) then
       call kriging_error(subname, 'size(drift, 1) /= ndrift')
-    if (size(drift, 2) /= self%obs(ivar)%n) &
+      return
+    end if
+    if (size(drift, 2) /= self%obs(ivar)%n) then
       call kriging_error(subname, 'size(drift, 2) /= nobs')
+      return
+    end if
     allocate(self%obs(ivar)%drift, source = drift)
   end subroutine set_obs_drift
 
@@ -748,8 +800,14 @@ contains
     character(len=*), parameter :: subname = "t_kriging%set_sim"
 
     if (self%nsim > 0) then
-      if (self%block%n == 0) call kriging_error(subname, 'Grid needs to be set first.')
-      if (any(self%obs%n == 0)) call kriging_error(subname, 'Observations need to be set first.')
+      if (self%block%n == 0) then
+        call kriging_error(subname, 'Grid needs to be set first.')
+        return
+      end if
+      if (any(self%obs%n == 0)) then
+        call kriging_error(subname, 'Observations need to be set first.')
+        return
+      end if
       associate(ndim => self%ndim, obs => self%obs(1))
         !-- Random visit path
         if (present(randpath)) then
@@ -831,11 +889,19 @@ contains
     character(len=*), parameter :: subname = "t_kriging%set_search"
 
     real, allocatable :: rcoord(:,:)   ! rotated coordinates for anisotropic tree
-    if (self%obs(ivar)%n == 0) &
+    if (self%obs(ivar)%n == 0) then
       call kriging_error(subname, 'set_obs() needs to be called before set_search().')
+      return
+    end if
     if (ivar == 1 .and. self%nsim > 0) then
-      if (self%block%n == 0) call kriging_error(subname, 'set_grid() needs to be called before set_search().')
-      if (size(self%obs(ivar)%coord, 2) == self%obs(ivar)%n) call kriging_error(subname, 'set_sim() needs to be called before set_search().')
+      if (self%block%n == 0) then
+        call kriging_error(subname, 'set_grid() needs to be called before set_search().')
+        return
+      end if
+      if (size(self%obs(ivar)%coord, 2) == self%obs(ivar)%n) then
+        call kriging_error(subname, 'set_sim() needs to be called before set_search().')
+        return
+      end if
     end if
     associate( &
       ndim               => self%ndim, &
@@ -868,8 +934,10 @@ contains
           allocate(rcoord, mold = obs%coord)
           call sub_rotate(obs%rotmat, ndim, size(obs%coord, 2), obs%coord, rcoord)
           obs%tree => kdtree2_create(rcoord, sort = .false., rearrange = .true.)
+          if (kriging_failed()) return
         else
           obs%tree => kdtree2_create(obs%coord, sort = .false., rearrange = .true.)
+          if (kriging_failed()) return
         end if
       end if
     end associate
@@ -915,7 +983,6 @@ contains
         self%inear(:,ivar) = self%inear(:, 0)
       end do
     end associate
-    self%vgm => krige%vgm(:,:,1)
   end subroutine initialize_kriging_ctx
 
 
@@ -943,18 +1010,38 @@ contains
 
     !-- Validate that all required arrays have been provided
     if (self%ndrift > 0) then
-      if (.not. allocated(self%block%drift)) &
+      if (.not. allocated(self%block%drift)) then
         call kriging_error(subname, 'Grid drift is not set while ndrift > 0.')
+        return
+      end if
       do ivar = 1, self%nvar
-        if (.not. allocated(self%obs(ivar)%drift)) &
+        if (.not. allocated(self%obs(ivar)%drift)) then
           call kriging_error(subname, 'Observation drift is not set while ndrift > 0.')
+          return
+        end if
+      end do
+    end if
+
+    !-- SGSIM: propagate primary variogram before validation so index-0 slots
+    !   are populated for previously simulated block conditioning.
+    if (self%nsim > 0) then
+      mb = merge(self%block%n, 1, self%varying_vgm)
+      do ib = 1, mb
+        self%vgm(0, 0, ib) = self%vgm(1, 1, ib)
+        do ivar = 1, self%nvar
+          self%vgm(0, ivar, ib) = self%vgm(1, ivar, ib)
+          self%vgm(ivar, 0, ib) = self%vgm(ivar, 1, ib)
+        end do
       end do
     end if
 
     call self%validate_vgm()
+    if (kriging_failed()) return
     do ivar = 1, self%nvar
-      if (.not. self%obs(ivar)%set_search) &
+      if (.not. self%obs(ivar)%set_search) then
         call kriging_error(subname, 'set_search() needs to be called before solve().')
+        return
+      end if
     end do
 
     associate(npp => self%nppmax, matsize => self%matsize_max, ifile => self%ifile)
@@ -975,19 +1062,6 @@ contains
         write(ifile, *) self%block%n, self%nvar, (self%obs(ivar)%nmax, ivar=1, self%nvar)
       end if
 
-      !-- SGSIM: propagate primary variogram to index-0 slots so that
-      !   covariances between observation and previously simulated blocks
-      !   use the same model as covariances between observations
-      if (self%nsim > 0) then
-        mb = merge(self%block%n, 1, self%varying_vgm)
-        do ib = 1, mb
-          self%vgm(0, 0, ib) = self%vgm(1, 1, ib)
-          do ivar = 1, self%nvar
-            self%vgm(0, ivar, ib) = self%vgm(1, ivar, ib)
-            self%vgm(ivar, 0, ib) = self%vgm(ivar, 1, ib)
-          end do
-        end do
-      end if
     end associate
   end subroutine prepare
 
@@ -1017,8 +1091,9 @@ contains
   ! SGSIM (nsim>0) must run sequentially because estimate_block() for block ib
   ! reads block%estimate for blocks 1..ib-1 (already simulated).  Parallelising
   ! over blocks would race on the shared estimate array.  The IF clause on the
-  ! OMP PARALLEL directive disables OMP when nsim>0 or store_weight=.true.
-  ! (store_weight must be sequential to preserve factor-file line order).
+  ! OMP PARALLEL directive disables OMP when nsim>0 or when factor files are
+  ! used.  Debug matrix output is handled with a small critical section around
+  ! file I/O so the kriging work can still run in parallel.
   !============================================================================
   subroutine solve(self)
     use omp_lib
@@ -1029,6 +1104,7 @@ contains
     character(len=*), parameter :: subname = "t_kriging%solve"
 
     call self%prepare()
+    if (kriging_failed()) return
 
     associate(nb => self%block%n, verbose => self%verbose)
       if (verbose) print*, "Starting Kriging loop"
@@ -1042,6 +1118,7 @@ contains
 
       !$OMP DO SCHEDULE(DYNAMIC, 1)
       do ib = 1, nb
+        if (kriging_failed()) cycle
         !-- Progress bar: only the last thread prints to avoid interleaved output
 #ifdef _OPENMP
         if (verbose .and. omp_get_thread_num() == omp_get_num_threads()-1) call progress(ib, nb)
@@ -1050,25 +1127,33 @@ contains
 #endif
         ctx%iblock = ib
 
-        !-- Point ctx%vgm at this block's variogram slice (thread-private).
-        if (self%varying_vgm) ctx%vgm => self%vgm(:,:,ib)
         if (self%use_old_weight) then
           !-- Factor-file path: read pre-computed weights, skip the solve
           call self%read_weight(ctx)
         else
           call self%assemble_linear_system(ctx)
+          if (kriging_failed()) cycle
           !-- Skip the matrix solve when only one neighbour exists (trivial case)
           if (ctx%npp > 1) call self%solve_linear_system(ctx)
+          if (kriging_failed()) cycle
           call ctx%assign_weight(self)
         end if
 
         if (self%store_weight) call self%write_weight(ctx)
         call self%estimate_block(ctx)
-        if (self%write_mat) call ctx%write_matrix(self)
+        if (self%write_mat) then
+          ! Files are named per block, but the Fortran runtime still shares
+          ! newunit/open/write bookkeeping.  Serialize only the debug output.
+          !$OMP CRITICAL(write_matrix_io)
+          call ctx%write_matrix(self)
+          !$OMP END CRITICAL(write_matrix_io)
+        end if
       end do
       !$OMP END DO
       deallocate(ctx)     ! explicit per-thread cleanup; avoids crash on runtime auto-finalization of PRIVATE allocatables
       !$OMP END PARALLEL
+
+      if (kriging_failed()) return
 
 #ifdef __INTEL_COMPILER
       if (verbose) close(6)
@@ -1156,6 +1241,7 @@ contains
         if (nmax < nobs + iblock - 1) then
           !-- k-d tree query with max_idx filter: only returns entries < nobs+iblock
           call kdtree2_n_nearest_maxidx(self%obs(ivar)%tree, newloc(:,1), nmax, results, nobs+iblock-1)
+          if (kriging_failed()) return
           allocate(is_obs, source = results%idx <= nobs)
           nnear              = count(is_obs)
           nnearb             = nmax - nnear
@@ -1167,6 +1253,8 @@ contains
           !-- All obs + prior blocks fit within nmax: compute distances directly
           nnear  = nobs
           nnearb = iblock - 1
+          call set_seq(inear(1:nnear), nnear)
+          if (nnearb > 0) call set_seq(inearb(1:nnearb), nnearb)
           dist (1:nnear)  = rotated_dists(rotmat, ndim, newloc(:,1), obsloc(:, 1:nnear))
           distb(1:nnearb) = rotated_dists(rotmat, ndim, newloc(:,1), self%block%coord(:, 1:nnearb))
         end if
@@ -1177,6 +1265,7 @@ contains
       else
         if (nmax < nobs) then
           call kdtree2_n_nearest(self%obs(ivar)%tree, newloc(:,1), nmax, results)
+          if (kriging_failed()) return
           nnear          = nmax
           inear(1:nnear) = results%idx
           dist (1:nnear) = results%dis
@@ -1254,7 +1343,7 @@ contains
     integer, intent(in)  :: ivar, jvar   ! variable indices; jvar=-1 for RHS
     integer, intent(in)  :: ir0, ic0     ! row / column offsets into matA / rhsB
 
-    integer              :: i, j, k, k1, istart
+    integer              :: i, j, k, k1, istart, ivgm
     real                 :: lag(3), tmp
     class(t_data), pointer :: obs1, obs2
     character(len=*), parameter :: subname = "t_kriging%calc_covariance"
@@ -1267,6 +1356,11 @@ contains
       rs    => self%block%rangescale (ctx%iblock), &  ! variogram range scaler
       ln    => self%block%localnugget(ctx%iblock))    ! local nugget
 
+      ! Select the variogram slice directly from self%vgm.  A ctx-level pointer
+      ! to self%vgm(:,:,ib) would reset lower bounds to 1 and break SGSIM's
+      ! index-0 covariance entries.
+      ivgm = merge(ctx%iblock, 1, self%varying_vgm)
+
       !-- Resolve obs1: variable ivar (or block for SGSIM conditioning)
       if (ivar == 0) then
         obs1 => self%block
@@ -1278,7 +1372,7 @@ contains
       ! RHS mode: covariance between each neighbour and the block to estimate
       !------------------------------------------------------------------------
       if (jvar == -1) then
-        associate(vgm => ctx%vgm(1, ivar))
+        associate(vgm => self%vgm(1, ivar, ivgm))
           do i = 1, nnear
             tmp = 0.0
             k1 = self%block%iblockpnt(ctx%iblock) - 1
@@ -1298,7 +1392,7 @@ contains
         associate( &
           nnear2 => ctx%nnear(jvar), &
           inear2 => ctx%inear(1:ctx%nnear(jvar), jvar), &
-          vgm    => ctx%vgm(jvar, ivar))
+          vgm    => self%vgm(jvar, ivar, ivgm))
 
           if (jvar == 0) then
             obs2 => self%block
@@ -1390,6 +1484,7 @@ contains
       !-- Degenerate: no neighbours found at all
       if (ctx%nnear(0) + ctx%nnear(1) == 0) then
         call kriging_error(subname, 'not enough neighbors for kriging at block', iblock=ctx%iblock)
+        return
       end if
 
       !-- Assemble matrix blocks
@@ -1494,7 +1589,7 @@ contains
     class(t_kriging)     :: self
     class(t_kriging_ctx) :: ctx
 
-    integer            :: info, i, j, k1
+    integer            :: info, i, j, k1, ivgm
     real               :: lag(3)
     character(len=*), parameter :: subname = "t_kriging%solve_linear_system"
 
@@ -1511,6 +1606,8 @@ contains
       unbias    => self%unbias, &
       ndrift    => self%ndrift)
 
+      ivgm = merge(ctx%iblock, 1, self%varying_vgm)
+
       !-- Primary solver: packed Cholesky (SSPSV)
       call kriging_solve(npp, unbias + ndrift, 1, matA, rhsB, x, info)
 
@@ -1523,11 +1620,15 @@ contains
 
       !-- Both solvers failed
       if (info /= 0) then
+        ! Singular-matrix diagnostics use the same debug writer as write_mat.
+        !$OMP CRITICAL(write_matrix_io)
         call ctx%write_matrix(self)
+        !$OMP END CRITICAL(write_matrix_io)
         if (self%neglect_error) then
           x = IEEE_VALUE(0.0, IEEE_QUIET_NAN)
         else
           call kriging_error(subname, 'Singular matrix', iblock=ctx%iblock)
+          return
         end if
       end if
 
@@ -1539,7 +1640,7 @@ contains
 
       !-- Kriging variance: sigma^2 = C(0) - lambda^T * c0
       associate( &
-        vgm        => ctx%vgm(1, 1), &
+        vgm        => self%vgm(1, 1, ivgm), &
         var        => self%block%variance(iblock), &
         weight     => self%grid%weight, &
         coord      => self%grid%coord, &
@@ -1802,6 +1903,10 @@ end subroutine update_info
   !   data_<ib>.csv  — neighbour coordinates, values, distances, weights
   !   matA_<ib>.csv  — full kriging matrix [matsize x matsize]
   !   rhsB_<ib>.csv  — right-hand-side vector [matsize]
+  !
+  ! The caller serializes this routine under OpenMP.  The file names are unique,
+  ! but concurrent OPEN/WRITE/CLOSE through the Fortran runtime has caused
+  ! access violations with the Windows DLL runtime.
   !============================================================================
   subroutine write_matrix(self, krige)
     class(t_kriging_ctx) :: self
@@ -1937,13 +2042,15 @@ end subroutine update_info
               ', ivar=', iv, ', jvar=', jv, &
               '. Call set_vgm_block() or set_vgm_block_all().'
             call kriging_error(subname, trim(msg))
-            if (.not. self%vgm(jv, iv, ib)%is_valid()) then
-              write(msg, '(A,I0,A,I0,A,I0,A)') &
-                't_kriging_sva: variogram is not valid for block ', ib, &
-                ', ivar=', iv, ', jvar=', jv, &
-                '. Check your variogram parameters.'
-              call kriging_error(subname, trim(msg))
-            end if
+            return
+          end if
+          if (.not. self%vgm(jv, iv, ib)%is_valid()) then
+            write(msg, '(A,I0,A,I0,A,I0,A)') &
+              't_kriging_sva: variogram is not valid for block ', ib, &
+              ', ivar=', iv, ', jvar=', jv, &
+              '. Check your variogram parameters.'
+            call kriging_error(subname, trim(msg))
+            return
           end if
         end do
       end do
@@ -2038,10 +2145,11 @@ end subroutine update_info
   !============================================================================
   subroutine finalize(self)
     class(t_kriging) :: self
-    deallocate(self%obs)
-    deallocate(self%grid)
-    deallocate(self%block)
-    deallocate(self%vgm)
+    if (associated(self%obs))   deallocate(self%obs)
+    if (associated(self%grid))  deallocate(self%grid)
+    if (associated(self%block)) deallocate(self%block)
+    if (associated(self%vgm))   deallocate(self%vgm)
+    if (associated(self%krige_info)) deallocate(self%krige_info)
   end subroutine finalize
 
 end module kriging

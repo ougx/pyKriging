@@ -29,6 +29,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 SOURCES = [
     "common.f90",
+    "kriging_err.f90",
     "utils.F90",
     "progress_bar.F90",
     "rotation.f90",
@@ -37,7 +38,6 @@ SOURCES = [
     "gaussian_quadrature.f90",
     "lapack.f",
     "solver.f90",
-    "kriging_err.f90",
     "kriging.F90",
     "../sparks/f90getopt.F90",
     "../sparks/io.f90",

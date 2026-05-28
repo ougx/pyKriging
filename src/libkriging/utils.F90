@@ -1,5 +1,6 @@
 module utils
   use common, only: pi
+  use kriging_err, only: kriging_error
   implicit none
 contains
 
@@ -145,8 +146,8 @@ subroutine r8vec_normal_01 ( n, x )
   !
 
     if (n < 1) then
-      print*, 'N must be larger than 0'
-      stop 1
+      call kriging_error('r8vec_normal_01', 'N must be larger than 0')
+      return
     end if
     x_lo_index = 1
     x_hi_index = n
@@ -272,7 +273,8 @@ subroutine r8vec_normal_01 ( n, x )
     ! Sampling WITHOUT replacement
 
     if (nselect > n) then
-      error stop "random_subset: nselect > size(input) without replacement"
+      call kriging_error('random_subset', 'nselect > size(input) without replacement')
+      return
     end if
 
     temp = input
@@ -306,5 +308,4 @@ subroutine r8vec_normal_01 ( n, x )
   end function yesno
 
 end module
-
 

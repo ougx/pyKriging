@@ -33,6 +33,7 @@ end module kdtree2_precision_module
 
 module kdtree2_priority_queue_module
   use kdtree2_precision_module
+  use kriging_err, only: kriging_error
   !
   ! maintain a priority queue (PQ) of data, pairs of 'priority/payload',
   ! implemented with a binary heap.  This is the type, and the 'dis' field
@@ -250,8 +251,10 @@ bigloop:  do
     if (a%heap_size .gt. 0) then
        e = a%elems(1)
     else
-       write (*,*) 'PQ_MAX: ERROR, heap_size < 1'
-       stop
+       e%dis = 0.0_kdkind
+       e%idx = -1
+       call kriging_error('pq_max', 'heap_size < 1')
+       return
     endif
     return
   end subroutine pq_max
@@ -262,8 +265,9 @@ bigloop:  do
     if (a%heap_size .gt. 0) then
        pq_maxpri = a%elems(1)%dis
     else
-       write (*,*) 'PQ_MAX_PRI: ERROR, heapsize < 1'
-       stop
+       pq_maxpri = 0.0_kdkind
+       call kriging_error('pq_maxpri', 'heap_size < 1')
+       return
     endif
     return
   end function pq_maxpri
@@ -291,8 +295,10 @@ bigloop:  do
        call heapify(a,1)
        return
     else
-       write (*,*) 'PQ_EXTRACT_MAX: error, attempted to pop non-positive PQ'
-       stop
+       e%dis = 0.0_kdkind
+       e%idx = -1
+       call kriging_error('pq_extract_max', 'attempted to pop non-positive priority queue')
+       return
     end if
 
   end subroutine pq_extract_max
@@ -462,8 +468,8 @@ bigloop:  do
     integer           :: i
 
     if ((i .lt. 1) .or. (i .gt. a%heap_size)) then
-       write (*,*) 'PQ_DELETE: error, attempt to remove out of bounds element.'
-       stop
+       call kriging_error('pq_delete', 'attempt to remove out-of-bounds element')
+       return
     endif
 
     ! swap the item to be deleted with the last element
@@ -481,6 +487,7 @@ end module kdtree2_priority_queue_module
 module kdtree2_module
   use kdtree2_precision_module
   use kdtree2_priority_queue_module
+  use kriging_err, only: kriging_error
   ! K-D tree routines in Fortran 90 by Matt Kennel.
   ! Original program was written in Sather by Steve Omohundro and
   ! Matt Kennel.  Only the Euclidean metric is supported.
@@ -666,13 +673,8 @@ contains
 
     if (mr%dimen > mr%n) then
        !  unlikely to be correct
-       write (*,*) 'KD_TREE_TRANS: likely user error.'
-       write (*,*) 'KD_TREE_TRANS: You passed in matrix with D=',mr%dimen
-       write (*,*) 'KD_TREE_TRANS: and N=',mr%n
-       write (*,*) 'KD_TREE_TRANS: note, that new format is data(1:D,1:N)'
-       write (*,*) 'KD_TREE_TRANS: with usually N >> D.   If N =approx= D, then a k-d tree'
-       write (*,*) 'KD_TREE_TRANS: is not an appropriate data structure.'
-       stop
+       call kriging_error('kdtree2_create', 'input_data has more dimensions than points; expected data(1:D,1:N)')
+       return
     end if
 
     call build_tree(mr)
@@ -1354,8 +1356,7 @@ contains
     integer, intent(in) :: n
 
     if (size(sr%results,1) .lt. n) then
-       write (*,*) 'KD_TREE_TRANS:  you did not provide enough storage for results(1:n)'
-       stop
+       call kriging_error('validate_query_storage', 'not enough storage for results(1:n)')
        return
     endif
 

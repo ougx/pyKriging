@@ -7,17 +7,21 @@ rem -fopenmp is needed because solve() uses OpenMP internally — omitting it wi
 del *.exe *.obj *.o *.mod *.pdb
 rem -fopenmp
 gfortran -cpp -fbacktrace -ffree-line-length-none -O2 -fdefault-real-8 -fPIC  -shared ^
-   kdtree2_maxidx.f90 ^
    common.f90 ^
-   sposv.f ^
-   rotation.f90 ^
-   utils.f90 ^
-   variogram.f90 ^
-   gaussian_quadrature.f90 ^
+   kriging_err.f90 ^
+   utils.F90 ^
    progress_bar.F90 ^
+   rotation.f90 ^
+   variogram.f90 ^
+   variogram_st.f90 ^
+   kdtree2_maxidx.f90 ^
+   gaussian_quadrature.f90 ^
+   lapack.f ^
    solver.f90 ^
    kriging.F90 ^
-   kriging_capi.f90 ^
+   kriging_capi.F90 ^
+   kriging_st.F90 ^
+   kriging_st_capi.f90 ^
    -o ..\pykriging\kriging.dll
 
 

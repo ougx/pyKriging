@@ -85,6 +85,7 @@ _c_int    = ctypes.c_int
 _c_double = ctypes.c_double
 _c_char_p = ctypes.c_char_p
 _ptr_void = ctypes.c_void_p
+_ptr_char = ctypes.POINTER(ctypes.c_char)
 _ptr_int  = ctypes.POINTER(ctypes.c_int)
 _ptr_dbl  = ctypes.POINTER(ctypes.c_double)
 
@@ -94,10 +95,26 @@ def _cfun(name, argtypes, restype=None):
     fn.restype  = restype
     return fn
 
+def _status_cfun(name, argtypes):
+    """Wrap a kriging C API function that returns ierr.
+
+    The Fortran side records the detailed message in kriging_err; this wrapper
+    turns any non-zero ierr into a Python RuntimeError so ctypes callers do not
+    continue after a failed Fortran setup or solve call.
+    """
+    fn = _cfun(name, argtypes, _c_int)
+
+    def checked(*args):
+        _check(fn(*args), name)
+
+    checked.__name__ = name
+    checked._cfunc = fn
+    return checked
+
 _ptr_int64 = ctypes.POINTER(ctypes.c_int64)
-_krige_create      = _cfun("krige_create",      [_ptr_int64])
-_krige_destroy     = _cfun("krige_destroy",     [_ptr_int64])
-_krige_initialize  = _cfun("krige_initialize",  [
+_krige_create      = _status_cfun("krige_create",      [_ptr_int64])
+_krige_destroy     = _status_cfun("krige_destroy",     [_ptr_int64])
+_krige_initialize  = _status_cfun("krige_initialize",  [
     ctypes.c_int64,                              # handle
     _c_int, _c_int, _c_int, _c_int, _c_int,     # ndim, nvar, ndrift, unbias, nsim
     # flags: anisotropic_search, weight_correction, use_old_weight, store_weight,
@@ -108,18 +125,18 @@ _krige_initialize  = _cfun("krige_initialize",  [
     _c_double,                                   # sk_mean
     _c_int,                                      # seed
 ])
-_krige_set_obs     = _cfun("krige_set_obs", [
+_krige_set_obs     = _status_cfun("krige_set_obs", [
     ctypes.c_int64,                              # handle
     _c_int, _c_int, _c_int,                      # ivar, nobs, ndim_c
     _ptr_dbl, _ptr_dbl, _ptr_dbl,                # coord, value, variance
     _c_int, _c_double,                           # nmax, maxdist
 ])
-_krige_set_obs_drift = _cfun("krige_set_obs_drift", [
+_krige_set_obs_drift = _status_cfun("krige_set_obs_drift", [
     ctypes.c_int64,                              # handle
     _c_int, _c_int, _c_int,                      # ivar, ndrift_c, nobs
     _ptr_dbl,                                    # drift[ndrift_c, nobs]
 ])
-_krige_set_vgm     = _cfun("krige_set_vgm",  [
+_krige_set_vgm     = _status_cfun("krige_set_vgm",  [
     ctypes.c_int64,                              # handle
     _c_int, _c_int,                              # ivar, jvar
     _c_char_p,                                   # vtype (null-terminated)
@@ -127,7 +144,7 @@ _krige_set_vgm     = _cfun("krige_set_vgm",  [
     _c_double, _c_double, _c_double,             # a_major, a_minor1, a_minor2
     _c_double, _c_double, _c_double,             # azimuth, dip, plunge
 ])
-_krige_set_vgm_block = _cfun("krige_set_vgm_block", [
+_krige_set_vgm_block = _status_cfun("krige_set_vgm_block", [
     ctypes.c_int64,                              # handle
     _c_int, _c_int, _c_int,                      # ivar, jvar, ib
     _c_char_p,                                   # vtype (null-terminated)
@@ -135,12 +152,12 @@ _krige_set_vgm_block = _cfun("krige_set_vgm_block", [
     _c_double, _c_double, _c_double,             # a_major, a_minor1, a_minor2
     _c_double, _c_double, _c_double,             # azimuth, dip, plunge
 ])
-_krige_set_grid    = _cfun("krige_set_grid", [
+_krige_set_grid    = _status_cfun("krige_set_grid", [
     ctypes.c_int64,                              # handle
     _c_int, _c_int, _ptr_dbl,                   # ngrid, ndim_c, coord
     _ptr_dbl, _ptr_dbl,                          # rangescale, localnugget
 ])
-_krige_set_grid_block = _cfun("krige_set_grid_block", [
+_krige_set_grid_block = _status_cfun("krige_set_grid_block", [
     ctypes.c_int64,                              # handle
     _c_int,                                      # block_type
     _c_int, _c_int, _ptr_dbl,                   # ngrid, ndim_c, coord
@@ -149,27 +166,28 @@ _krige_set_grid_block = _cfun("krige_set_grid_block", [
     _ptr_dbl,                                    # blocksize
     _ptr_dbl, _ptr_dbl,                          # rangescale, localnugget
 ])
-_krige_set_grid_cv = _cfun("krige_set_grid_cv", [ctypes.c_int64])
-_krige_set_grid_drift = _cfun("krige_set_grid_drift", [
+_krige_set_grid_cv = _status_cfun("krige_set_grid_cv", [ctypes.c_int64])
+_krige_set_grid_drift = _status_cfun("krige_set_grid_drift", [
     ctypes.c_int64,                              # handle
     _c_int, _c_int,                              # ndrift_c, nblocks
     _ptr_dbl,                                    # drift[ndrift_c, nblocks]
 ])
-_krige_set_sim     = _cfun("krige_set_sim", [
+_krige_set_sim     = _status_cfun("krige_set_sim", [
     ctypes.c_int64,                              # handle
     _c_int, _ptr_int,                            # nblocks, randpath[nblocks]
     _c_int, _ptr_dbl,                            # nsim_c, sample[nsim_c, nblocks]
 ])
-_krige_set_search  = _cfun("krige_set_search", [
+_krige_set_search  = _status_cfun("krige_set_search", [
     ctypes.c_int64, _c_int,                      # handle, ivar
     _c_double, _c_double, _c_double, _c_double, _c_double,  # anis1, anis2, az, dip, plunge
 ])
-_krige_solve       = _cfun("krige_solve",       [ctypes.c_int64])
+_krige_solve       = _status_cfun("krige_solve",       [ctypes.c_int64])
 # _krige_print       = _cfun("krige_print",       [ctypes.c_int64])
-_krige_get_nblocks = _cfun("krige_get_nblocks", [ctypes.c_int64, _ptr_int])
-_krige_get_nsim    = _cfun("krige_get_nsim",    [ctypes.c_int64, _ptr_int])
-_krige_get_estimate= _cfun("krige_get_estimate",[ctypes.c_int64, _c_int, _c_int, _ptr_dbl])
-_krige_get_variance= _cfun("krige_get_variance",[ctypes.c_int64, _c_int, _ptr_dbl])
+_krige_get_nblocks = _status_cfun("krige_get_nblocks", [ctypes.c_int64, _ptr_int])
+_krige_get_nsim    = _status_cfun("krige_get_nsim",    [ctypes.c_int64, _ptr_int])
+_krige_get_estimate= _status_cfun("krige_get_estimate",[ctypes.c_int64, _c_int, _c_int, _ptr_dbl])
+_krige_get_variance= _status_cfun("krige_get_variance",[ctypes.c_int64, _c_int, _ptr_dbl])
+_krige_get_last_error = _cfun("krige_get_last_error", [_ptr_char, _c_int], _c_int)
 
 _krige_to_str      = _cfun("krige_to_str"   , [ctypes.c_int64], _ptr_void)
 
@@ -236,8 +254,8 @@ def _coord_to_fortran(coord: np.ndarray) -> np.ndarray:
     This function transposes to (ndim, nobs) and ensures Fortran memory order
     before the array is handed to the Fortran library.
 
-    Note: if nobs == ndim the transpose is ambiguous. Use the shape assertion
-    in each calling method (coord.shape[1] == self.ndim) to catch this.
+    Fortran receives the transposed array and validates the resulting
+    (ndim, nobs) shape, returning ierr instead of relying on Python asserts.
     """
     a = np.asarray(coord, dtype=np.float64)
     if a.ndim == 1:
@@ -269,6 +287,18 @@ def _h(handle: int) -> ctypes.c_int64:
     object is passed where ctypes expects to auto-convert an integer value.
     """
     return ctypes.c_int64(handle)
+
+def _last_error() -> str:
+    """Return the last Fortran error message recorded by kriging.dll."""
+    buf = ctypes.create_string_buffer(4096)
+    _krige_get_last_error(buf, _c_int(len(buf)))
+    return buf.value.decode("utf-8", errors="replace").strip()
+
+def _check(ierr: int, call_name: str) -> None:
+    """Raise a Python exception when a Fortran C API call returns an error."""
+    if int(ierr) != 0:
+        msg = _last_error() or f"{call_name} failed with ierr={int(ierr)}"
+        raise RuntimeError(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -435,10 +465,10 @@ class Kriging:
 
         # -- size tracking
         self._nblock = 0
-        self._nobs = np.zeros(self.nvar, dtype=int, dtype=np.uint32)
+        self._nobs = np.zeros(self.nvar, dtype=np.uint32)
         self._set_search = [False,] * self.nvar
         self._set_sim    = False
-        self._nobsdrift = np.zeros(self.nvar, dtype=int, dtype=np.uint32)
+        self._nobsdrift = np.zeros(self.nvar, dtype=np.uint32)
         self._nvgm_struct = np.zeros([self.nvar, self.nvar], dtype=np.uint32) # does not fully track nvgm_struct with varying vgm mode
     # ------------------------------------------------------------------
     def set_obs(
@@ -475,10 +505,6 @@ class Kriging:
             Maximum search distance. Default: unlimited.
         """
         import sys
-        assert coord.shape[1] == self.ndim, (
-            f"coord should be (nobs, ndim={self.ndim}), got {coord.shape}. "
-            "Rows are points, columns are spatial dimensions.")
-
         coord_f  = _coord_to_fortran(coord)        # (nobs, ndim) -> (ndim, nobs) F-order
         value_f  = _farray(value.ravel())           # ensure 1-D
         nobs     = coord_f.shape[1]
@@ -514,14 +540,9 @@ class Kriging:
             Drift values. Rows are observations, columns are drift functions.
             Transposed to (ndrift, nobs) internally before calling Fortran.
         """
-        assert self.ndrift > 0, ("ndrift must be > 0 when setting drift values.")
-        assert self._nobs[ivar-1] > 0, ("set_obs must be called before set_obs_drift.")
         drift_f  = _drift_to_fortran(drift)   # (nobs, ndrift) -> (ndrift, nobs)
         ndrift_c = drift_f.shape[0]
         nobs     = drift_f.shape[1]
-        assert ndrift_c == self.ndrift and nobs==self._nobs[ivar-1], (
-            f"drift has shape ({nobs}, {ndrift_c}) not matching the observation shape ({self._nobs[ivar-1]}, {self.ndrift})."
-        )
         _krige_set_obs_drift(_h(self._handle),
             _c_int(ivar), _c_int(ndrift_c), _c_int(nobs),
             _dptr(drift_f),
@@ -569,10 +590,6 @@ class Kriging:
         >>> k.set_vgm(1, 1, vtype="nug", nugget=0.1, sill=0.0, a_major=1.0)
         >>> k.set_vgm(1, 1, vtype="sph", nugget=0.0, sill=0.9, a_major=500.0)
         """
-        if self.varying_vgm:
-            assert self._nblock>0, (
-                'Grid needs to be set before adding variogram under varying_vgm mode.'
-            )
         if a_minor1 is None:
             a_minor1 = a_major
         if a_minor2 is None:
@@ -628,9 +645,6 @@ class Kriging:
             Rotation angles in degrees (default 0).
         """
         assert self.varying_vgm, "set_vgm_block requires varying_vgm=True"
-        assert self._nblock>0, (
-            'Grid needs to be set before adding variogram under varying_vgm mode.'
-        )
         if a_minor1 is None:
             a_minor1 = a_major
         if a_minor2 is None:
@@ -668,16 +682,9 @@ class Kriging:
             Additional nugget added per block to model local uncertainty.
             Default: 0.0 for all blocks.
         """
-        assert self._nobs[0]>0, 'Observation needs to be set first.'
         if coord is None:
-            assert self.cross_validation, (
-              "coord must be speicifed except for corss validation.")
             self.set_grid_cv()
             return
-
-        assert coord.shape[1] == self.ndim, (
-            f"coord should be (ngrid, ndim={self.ndim}), got {coord.shape}. "
-            "Rows are points, columns are spatial dimensions.")
 
         coord_f = _coord_to_fortran(coord)   # (ngrid, ndim) -> (ndim, ngrid)
         ngrid   = coord_f.shape[1]
@@ -728,10 +735,6 @@ class Kriging:
         localnugget : ndarray, shape (nblock,), optional
             Per-block additional nugget. Default: 0.0.
         """
-        assert self._nobs[0]>0, 'Observation needs to be set first.'
-        assert coord.shape[1] == self.ndim, (
-            f"coord should be (ngrid, ndim={self.ndim}), got {coord.shape}.")
-
         coord_f = _coord_to_fortran(coord)
         ngrid   = coord_f.shape[1]
         ndim_c  = coord_f.shape[0]
@@ -788,7 +791,6 @@ class Kriging:
         observation coordinates automatically.  Call instead of :meth:`set_grid`
         when ``cross_validation=True`` was passed to the constructor.
         """
-        assert self.cross_validation, ("set_grid_cv requires cross_validation=True")
         _krige_set_grid_cv(_h(self._handle))
         self._nblock = self._nobs[0]
 
@@ -808,14 +810,9 @@ class Kriging:
             sub-nodes), even for block kriging.
             Transposed to (ndrift, nblocks) internally before calling Fortran.
         """
-        assert self.ndrift > 0, ("ndrift must be > 0 when setting drift values.")
-        assert self._nblock > 0, ("set_grid must be called before set_grid_drift.")
         drift_f  = _drift_to_fortran(drift)   # (nblocks, ndrift) -> (ndrift, nblocks)
         ndrift_c = drift_f.shape[0]
         nblocks  = drift_f.shape[1]
-        assert ndrift_c == self.ndrift and nblocks==self._nblock, (
-            f"drift has shape ({nblocks}, {ndrift_c}) not matching the grid shape ({self._nblock}, {self.ndrift})."
-        )
         _krige_set_grid_drift(_h(self._handle),
             _c_int(ndrift_c), _c_int(nblocks),
             _dptr(drift_f),
@@ -845,8 +842,6 @@ class Kriging:
         # Python generates defaults so Fortran always receives concrete arrays.
         # We need the block count; retrieve it from the Fortran object.
         assert self.nsim > 0, ("nsim must be > 0 when setting SGSIM parameters.")
-        assert self._nblock > 0, ("set_grid must be called before set_sim.")
-        assert self._nobs[0] > 0, ("set_obs must be called for the first variable before set_sim.")
         nb = _c_int(0)
         _krige_get_nblocks(_h(self._handle), ctypes.byref(nb))
         nblocks = nb.value
@@ -902,10 +897,6 @@ class Kriging:
         plunge : float
             Plunge angle (degrees).
         """
-        assert self._nblock > 0, ("set_grid must be called before set_search.")
-        assert self._nobs[0] > 0, ("set_obs must be called for the first variable before set_search.")
-        if (self.nsim > 0):
-            assert self._set_sim, ("set_sim must be called before set_search.")
         _krige_set_search(_h(self._handle),
             _c_int(ivar),
             _c_double(anis1), _c_double(anis2),
@@ -921,7 +912,6 @@ class Kriging:
         """
         if self.verbose:
             get_omp_info()
-        assert all(self._set_search), ("set_search must be called for every variable before solve.")
         _krige_solve(_h(self._handle))
 
     # ------------------------------------------------------------------
@@ -966,7 +956,10 @@ class Kriging:
     def __del__(self):
         if self._handle != 0:
             _tmp = ctypes.c_int64(self._handle)
-            _krige_destroy(ctypes.byref(_tmp))
+            try:
+                _krige_destroy(ctypes.byref(_tmp))
+            except Exception:
+                pass
             self._handle = 0
 
     def get_info(self):
@@ -1037,10 +1030,6 @@ def ordinary_kriging(
     ...     vgm_spec=dict(vtype="sph", nugget=100, sill=900, a_major=1000, a_minor1=500),
     ...     nmax=20)
     """
-    assert obs_coord.ndim == 2 and obs_coord.shape[0] >= obs_coord.shape[1], (
-        f"obs_coord should be (nobs, ndim) with nobs >= ndim, got shape {obs_coord.shape}. "
-        "Rows are points, columns are spatial dimensions."
-    )
     assert obs_coord.shape[0] == obs_value.shape[0], (
         f"obs_coord has {obs_coord.shape[0]} rows but obs_value has {obs_value.shape[0]} elements."
     )

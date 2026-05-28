@@ -27,7 +27,7 @@ module kriging_st
   use, intrinsic :: ieee_arithmetic
   use iso_fortran_env, only: output_unit
   use common,           only: EPSLON
-  use kriging_err,      only: kriging_error
+  use kriging_err,      only: kriging_error, kriging_failed
   use utils,            only: set_seq, r8vec_normal_01, random_seed_initialize
   use progress_bar,     only: progress
   use rotation,         only: calc_rotmat, sub_rotate, rotated_dists
@@ -310,9 +310,18 @@ contains
 
     associate(obs => self%obs(ivar))
       obs%n = size(value)
-      if (size(coord, 1) /= 3)    error stop 'set_obs_st: coord must have 3 rows (x,y,z)'
-      if (size(coord, 2) /= obs%n) error stop 'set_obs_st: coord column count != nobs'
-      if (size(time)     /= obs%n) error stop 'set_obs_st: time length != nobs'
+      if (size(coord, 1) /= 3) then
+        call kriging_error('set_obs_st', 'coord must have 3 rows (x,y,z)')
+        return
+      end if
+      if (size(coord, 2) /= obs%n) then
+        call kriging_error('set_obs_st', 'coord column count != nobs')
+        return
+      end if
+      if (size(time) /= obs%n) then
+        call kriging_error('set_obs_st', 'time length != nobs')
+        return
+      end if
 
       if (allocated(obs%coord))    deallocate(obs%coord)
       if (allocated(obs%time))     deallocate(obs%time)
@@ -343,10 +352,14 @@ contains
     class(t_kriging_st), intent(inout) :: self
     integer,             intent(in)    :: ivar
     real,                intent(in)    :: drift(:,:)   ! [ndrift, nobs]
-    if (self%obs(ivar)%n == 0) &
-      error stop 'set_obs_drift_st: call set_obs first'
-    if (size(drift,1) /= self%ndrift) &
-      error stop 'set_obs_drift_st: size(drift,1) /= ndrift'
+    if (self%obs(ivar)%n == 0) then
+      call kriging_error('set_obs_drift_st', 'call set_obs first')
+      return
+    end if
+    if (size(drift,1) /= self%ndrift) then
+      call kriging_error('set_obs_drift_st', 'size(drift,1) /= ndrift')
+      return
+    end if
     if (allocated(self%obs(ivar)%drift)) deallocate(self%obs(ivar)%drift)
     allocate(self%obs(ivar)%drift, source = drift)
   end subroutine set_obs_drift_st
@@ -362,11 +375,15 @@ contains
     character(*),        intent(in)    :: spec
     if (jvar == ivar) then
       call self%vgm(ivar, jvar)%add_spatial(spec)
+      if (kriging_failed()) return
     else if (jvar > ivar) then
       call self%vgm(ivar, jvar)%add_spatial(spec)
+      if (kriging_failed()) return
       call self%vgm(jvar, ivar)%add_spatial(spec)
+      if (kriging_failed()) return
     else
-      error stop 'set_vgm_st: jvar must be >= ivar'
+      call kriging_error('set_vgm_st', 'jvar must be >= ivar')
+      return
     end if
   end subroutine set_vgm_st
 
@@ -381,11 +398,15 @@ contains
     character(*),        intent(in)    :: spec
     if (jvar == ivar) then
       call self%vgm(ivar, jvar)%add_temporal(spec)
+      if (kriging_failed()) return
     else if (jvar > ivar) then
       call self%vgm(ivar, jvar)%add_temporal(spec)
+      if (kriging_failed()) return
       call self%vgm(jvar, ivar)%add_temporal(spec)
+      if (kriging_failed()) return
     else
-      error stop 'set_vgm_temporal_st: jvar must be >= ivar'
+      call kriging_error('set_vgm_temporal_st', 'jvar must be >= ivar')
+      return
     end if
   end subroutine set_vgm_temporal_st
 
@@ -400,11 +421,15 @@ contains
     real,                intent(in)    :: sills(n)
     if (jvar == ivar) then
       call self%vgm(ivar, jvar)%set_joint_sills(sills, n)
+      if (kriging_failed()) return
     else if (jvar > ivar) then
       call self%vgm(ivar, jvar)%set_joint_sills(sills, n)
+      if (kriging_failed()) return
       call self%vgm(jvar, ivar)%set_joint_sills(sills, n)
+      if (kriging_failed()) return
     else
-      error stop 'set_vgm_joint_sills_st: jvar must be >= ivar'
+      call kriging_error('set_vgm_joint_sills_st', 'jvar must be >= ivar')
+      return
     end if
   end subroutine set_vgm_joint_sills_st
 
@@ -421,8 +446,14 @@ contains
     integer :: ng
 
     ng = size(coord, 2)
-    if (size(coord,1) /= 3)  error stop 'set_grid_st: coord must have 3 rows'
-    if (size(time) /= ng)    error stop 'set_grid_st: time length != ngrid'
+    if (size(coord,1) /= 3) then
+      call kriging_error('set_grid_st', 'coord must have 3 rows')
+      return
+    end if
+    if (size(time) /= ng) then
+      call kriging_error('set_grid_st', 'time length != ngrid')
+      return
+    end if
 
     associate(b => self%block, g => self%grid)
       b%n          = ng
@@ -481,11 +512,22 @@ contains
     integer :: nb, ig, ib
 
     nb = size(coord, 2)
-    if (size(coord,1) /= 3)           error stop 'set_grid_block_st: coord must have 3 rows'
-    if (size(time) /= nb)             error stop 'set_grid_block_st: time length != nblocks'
-    if (size(nblockpnt) /= nb)        error stop 'set_grid_block_st: nblockpnt length != nblocks'
-    if (size(blockcoord,2) /= sum(nblockpnt)) &
-      error stop 'set_grid_block_st: blockcoord columns != sum(nblockpnt)'
+    if (size(coord,1) /= 3) then
+      call kriging_error('set_grid_block_st', 'coord must have 3 rows')
+      return
+    end if
+    if (size(time) /= nb) then
+      call kriging_error('set_grid_block_st', 'time length != nblocks')
+      return
+    end if
+    if (size(nblockpnt) /= nb) then
+      call kriging_error('set_grid_block_st', 'nblockpnt length != nblocks')
+      return
+    end if
+    if (size(blockcoord,2) /= sum(nblockpnt)) then
+      call kriging_error('set_grid_block_st', 'blockcoord columns != sum(nblockpnt)')
+      return
+    end if
 
     associate(b => self%block, g => self%grid)
       b%n          = nb
@@ -533,7 +575,10 @@ contains
   !=============================================================================
   subroutine set_grid_cv_st(self)
     class(t_kriging_st), intent(inout) :: self
-    if (self%obs(1)%n == 0) error stop 'set_grid_cv_st: call set_obs first'
+    if (self%obs(1)%n == 0) then
+      call kriging_error('set_grid_cv_st', 'call set_obs first')
+      return
+    end if
     call self%set_grid(self%obs(1)%coord, self%obs(1)%time)
     self%cross_validation = .true.
   end subroutine set_grid_cv_st
@@ -545,8 +590,14 @@ contains
   subroutine set_grid_drift_st(self, drift)
     class(t_kriging_st), intent(inout) :: self
     real,                intent(in)    :: drift(:,:)   ! [ndrift, nblocks]
-    if (self%block%n == 0) error stop 'set_grid_drift_st: call set_grid first'
-    if (size(drift,1) /= self%ndrift) error stop 'set_grid_drift_st: size(drift,1) /= ndrift'
+    if (self%block%n == 0) then
+      call kriging_error('set_grid_drift_st', 'call set_grid first')
+      return
+    end if
+    if (size(drift,1) /= self%ndrift) then
+      call kriging_error('set_grid_drift_st', 'size(drift,1) /= ndrift')
+      return
+    end if
     if (allocated(self%block%drift)) deallocate(self%block%drift)
     allocate(self%block%drift, source = drift)
   end subroutine set_grid_drift_st
@@ -565,8 +616,14 @@ contains
     integer              :: ifile, isim, ib
 
     if (self%nsim == 0) return
-    if (self%block%n == 0) error stop 'set_sim_st: call set_grid first'
-    if (self%obs(1)%n == 0) error stop 'set_sim_st: call set_obs(1) first'
+    if (self%block%n == 0) then
+      call kriging_error('set_sim_st', 'call set_grid first')
+      return
+    end if
+    if (self%obs(1)%n == 0) then
+      call kriging_error('set_sim_st', 'call set_obs(1) first')
+      return
+    end if
 
     associate(nb => self%block%n, obs => self%obs(1))
       !-- Random visit path (order already allocated by set_grid_st)
@@ -657,8 +714,10 @@ contains
           allocate(rcoord, mold=obs%coord)
           call sub_rotate(obs%rotmat, 3, size(obs%coord,2), obs%coord, rcoord)
           obs%tree => kdtree2_create(rcoord, sort=.false., rearrange=.true.)
+          if (kriging_failed()) return
         else
           obs%tree => kdtree2_create(obs%coord, sort=.false., rearrange=.true.)
+          if (kriging_failed()) return
         end if
       end if
     end associate
@@ -711,6 +770,7 @@ contains
         if (nmax < nobs + iblock - 1) then
           call kdtree2_n_nearest_maxidx(self%obs(ivar)%tree, newloc(:,1), nmax, &
                                         results, nobs + iblock - 1)
+          if (kriging_failed()) return
           allocate(is_obs, source = results%idx <= nobs)
           nnear  = count(is_obs)
           nnearb = nmax - nnear
@@ -757,6 +817,7 @@ contains
         allocate(results(nmax))
         if (self%obs(ivar)%need_search) then
           call kdtree2_n_nearest(self%obs(ivar)%tree, newloc(:,1), nmax, results)
+          if (kriging_failed()) return
           nnear          = nmax
           inear(1:nnear) = results%idx
           dist (1:nnear) = results%dis
@@ -927,6 +988,7 @@ contains
           return
         else
           call kriging_error('assemble_system_st', 'No neighbours found', iblock=ctx%iblock)
+          return
         end if
       end if
 
@@ -1014,6 +1076,7 @@ contains
           x = IEEE_VALUE(0.0, IEEE_QUIET_NAN)
         else
           call kriging_error('solve_system_st', 'Singular matrix', iblock=iblock)
+          return
         end if
       end if
 
@@ -1118,8 +1181,11 @@ contains
     do ivar = 1, self%nvar
       do jvar = 1, self%nvar
         call self%vgm(jvar, ivar)%compute_cov0()
-        if (.not. self%vgm(jvar, ivar)%is_valid_st(ivar, jvar)) &
+        if (kriging_failed()) return
+        if (.not. self%vgm(jvar, ivar)%is_valid_st(ivar, jvar)) then
           call kriging_error('prepare_st', 'Invalid ST variogram')
+          return
+        end if
       end do
     end do
 
@@ -1163,6 +1229,7 @@ contains
     real, allocatable :: temp(:,:), temp_t(:), temp_v(:)
 
     call self%prepare()
+    if (kriging_failed()) return
     nb = self%block%n
 
     if (self%verbose) print '(A)', 'Starting ST kriging loop'
@@ -1173,6 +1240,7 @@ contains
 
     !$OMP DO SCHEDULE(DYNAMIC,1)
     do ib = 1, nb
+      if (kriging_failed()) cycle
       ctx%iblock = ib
 #ifdef _OPENMP
       if (self%verbose .and. omp_get_thread_num() == omp_get_num_threads()-1) &
@@ -1181,7 +1249,9 @@ contains
       if (self%verbose) call progress(ib, nb)
 #endif
       call self%assemble_system(ctx)
+      if (kriging_failed()) cycle
       if (ctx%npp > 1) call self%solve_system(ctx)
+      if (kriging_failed()) cycle
       call ctx%assign_weight(self)
       call self%estimate_block(ctx)
     end do
@@ -1189,6 +1259,8 @@ contains
 
     deallocate(ctx)
     !$OMP END PARALLEL
+
+    if (kriging_failed()) return
 
     if (self%verbose) print '(A)', '  ST kriging completed.'
 

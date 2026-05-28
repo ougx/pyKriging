@@ -273,10 +273,14 @@ contains
     integer :: i, n_tab
     real    :: h_min, log_r
 
-    if (.not. allocated(this%shape)) &
-      error stop 'vgm_component%build_table: shape not allocated'
-    if (ratio <= 1.0) &
-      error stop 'vgm_component%build_table: ratio must be > 1.0'
+    if (.not. allocated(this%shape)) then
+      call kriging_error('vgm_component%build_table', 'shape not allocated')
+      return
+    end if
+    if (ratio <= 1.0) then
+      call kriging_error('vgm_component%build_table', 'ratio must be > 1.0')
+      return
+    end if
 
     !-- h_min: smallest positive breakpoint (1e-4 of hmax)
     h_min = hmax * 1.0e-4
@@ -400,12 +404,18 @@ contains
   subroutine struct_add_comp(this, comp)
     class(vgm_struct),   intent(inout) :: this
     type(vgm_component), intent(in)    :: comp
-    if (this%nstruct >= maxvgm) &
-      error stop 'vgm_struct%add: exceeded maxvgm nested structures'
-    if (.not. allocated(comp%shape)) &
-      error stop 'vgm_struct%add: component shape not allocated'
-    if (.not. comp%aniso%ready) &
-      error stop 'vgm_struct%add: aniso matrix not built — call aniso%build()'
+    if (this%nstruct >= maxvgm) then
+      call kriging_error('vgm_struct%add', 'exceeded maxvgm nested structures')
+      return
+    end if
+    if (.not. allocated(comp%shape)) then
+      call kriging_error('vgm_struct%add', 'component shape not allocated')
+      return
+    end if
+    if (.not. comp%aniso%ready) then
+      call kriging_error('vgm_struct%add', 'aniso matrix not built; call aniso%build()')
+      return
+    end if
     this%nstruct = this%nstruct + 1
     this%structs(this%nstruct) = comp
     this%cov0 = this%cov0 + comp%sill + comp%shape%nugget
@@ -418,8 +428,10 @@ contains
     real,              intent(in)    :: nugget, sill
     real,              intent(in)    :: a_major, a_minor1, a_minor2
     real,              intent(in)    :: azimuth, dip, plunge
-    if (this%nstruct >= maxvgm) &
-      error stop 'vgm_struct%add: exceeded maxvgm nested structures'
+    if (this%nstruct >= maxvgm) then
+      call kriging_error('vgm_struct%add', 'exceeded maxvgm nested structures')
+      return
+    end if
     this%nstruct = this%nstruct + 1
     associate (cc => this%structs(this%nstruct))
       if (allocated(cc%shape)) deallocate(cc%shape)
@@ -442,7 +454,9 @@ contains
         case('cir'); allocate(variog_cir :: cc%shape)
         case('lin'); allocate(variog_lin :: cc%shape)
         case default
-          print*, 'vgm_struct%add: unknown variogram type: '//trim(vtype); stop
+          this%nstruct = this%nstruct - 1
+          call kriging_error('vgm_struct%add', 'unknown variogram type: '//trim(vtype))
+          return
       end select
       cc%shape%vtype = trim(vtype)
       this%cov0 = this%cov0 + sill + nugget

@@ -221,8 +221,10 @@ contains
     integer,              intent(in)    :: n
     real,                 intent(in)    :: sills(n)
 
-    if (n /= this%cs%nstruct) &
+    if (n /= this%cs%nstruct) then
       call kriging_error("set_joint_sills_vgm_st", 'vgm_struct_st%set_joint_sills: length of sills must equal cs%nstruct')
+      return
+    end if
     if (allocated(this%sill_st)) deallocate(this%sill_st)
     allocate(this%sill_st(n))
     this%sill_st = sills

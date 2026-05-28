@@ -180,6 +180,7 @@ _CAPI_EXPORTS = [
     "krige_get_nsim",
     "krige_get_estimate",
     "krige_get_variance",
+    "krige_get_last_error",
     # Space-time kriging
     "krige_st_create",
     "krige_st_destroy",

@@ -48,8 +48,19 @@
 module kriging_capi
   use iso_c_binding
   use kriging, only: t_kriging
+  use kriging_err, only: kriging_clear_error, kriging_ierr, kriging_copy_error, &
+                         kriging_error, kriging_failed
   implicit none
   private
+
+  ! Registry-backed handles avoid passing raw addresses of non-C-interoperable
+  ! Fortran objects through ctypes.  Python receives a 1-based slot index and
+  ! every C entry point resolves that index back to the live Fortran pointer.
+  type kriging_handle_slot
+    type(t_kriging), pointer :: obj => null()
+  end type kriging_handle_slot
+
+  type(kriging_handle_slot), allocatable, save :: kriging_registry(:)
 
 contains
 
@@ -57,26 +68,42 @@ contains
   ! Lifecycle: create / destroy
   !=============================================================================
 
-  !-- Allocate a new t_kriging object on the heap and return its address
-  !   as an opaque 64-bit integer handle.  Python stores this handle and
-  !   passes it back on every subsequent call.
-  subroutine krige_create(handle) bind(C, name='krige_create')
+  !-- Allocate a new t_kriging object on the heap and return its registry slot
+  !   as an opaque 64-bit integer handle.  Python stores this handle and passes
+  !   it back on every subsequent call.
+  integer(c_int) function krige_create(handle) bind(C, name='krige_create') result(ierr)
     integer(c_intptr_t), intent(out) :: handle
     type(t_kriging), pointer :: obj
-    allocate(obj)
-    handle = transfer(c_loc(obj), handle)
-  end subroutine krige_create
+    integer :: stat
+    call kriging_clear_error()
+    handle = 0_c_intptr_t
+    allocate(obj, stat=stat)
+    if (stat /= 0) then
+      call kriging_error('krige_create', 'Failed to allocate t_kriging object')
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
+    call store_obj(obj, handle)
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_create
 
   !-- Finalize and deallocate the object; zero the handle so stale use is
   !   caught early.
-  subroutine krige_destroy(handle) bind(C, name='krige_destroy')
+  integer(c_int) function krige_destroy(handle) bind(C, name='krige_destroy') result(ierr)
     integer(c_intptr_t), intent(inout) :: handle
     type(t_kriging), pointer :: obj
+    call kriging_clear_error()
     call get_obj(handle, obj)
+    if (kriging_failed()) then
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
     call obj%finalize()
     deallocate(obj)
+    call release_obj(handle)
     handle = 0_c_intptr_t
-  end subroutine krige_destroy
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_destroy
 
   !=============================================================================
   ! krige_initialize
@@ -104,12 +131,12 @@ contains
   !   sk_mean            : global mean for simple kriging (unbias=0)
   !   seed               : random seed for SGSIM (0 = use clock)
   !=============================================================================
-  subroutine krige_initialize(handle, &
+  integer(c_int) function krige_initialize(handle, &
       ndim, nvar, ndrift, unbias, nsim, &
       anisotropic_search, weight_correction, use_old_weight, &
       store_weight, cross_validation, write_mat, neglect_error, varying_vgm, verbose, &
       weight_file, bounds, sk_mean, seed) &
-      bind(C, name='krige_initialize')
+      bind(C, name='krige_initialize') result(ierr)
 
     integer(c_intptr_t), intent(in), value :: handle
     integer(c_int),      intent(in), value :: ndim, nvar, ndrift, unbias, nsim, seed
@@ -128,7 +155,12 @@ contains
     !   compiler flags used (/real-size:64 / -fdefault-real-8), so the
     !   assignment is lossless.
     real :: fbounds(2)
+    call kriging_clear_error()
     call get_obj(handle, obj)
+    if (kriging_failed()) then
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
     fbounds = real(bounds)
 
     call obj%initialize( &
@@ -150,7 +182,8 @@ contains
       bounds             = fbounds, &
       sk_mean            = real(sk_mean), &
       seed               = int(seed))
-  end subroutine krige_initialize
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_initialize
 
   !=============================================================================
   ! krige_set_obs
@@ -169,9 +202,9 @@ contains
   !   nmax     : maximum number of neighbours; pass huge(0) to use all
   !   maxdist  : maximum search distance; pass huge(0.0) for unlimited
   !=============================================================================
-  subroutine krige_set_obs(handle, ivar, nobs, ndim_c, &
+  integer(c_int) function krige_set_obs(handle, ivar, nobs, ndim_c, &
       coord, value, variance, nmax, maxdist) &
-      bind(C, name='krige_set_obs')
+      bind(C, name='krige_set_obs') result(ierr)
 
     integer(c_intptr_t), intent(in), value :: handle
     integer(c_int),      intent(in), value :: ivar, nobs, ndim_c
@@ -182,13 +215,19 @@ contains
     real(c_double),      intent(in), value :: maxdist
 
     type(t_kriging), pointer :: obj
+    call kriging_clear_error()
     call get_obj(handle, obj)
+    if (kriging_failed()) then
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
 
     call obj%set_obs(int(ivar), real(coord), real(value), &
       variance = real(variance), &
       nmax     = int(nmax), &
       maxdist  = real(maxdist))
-  end subroutine krige_set_obs
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_set_obs
 
   !=============================================================================
   ! krige_set_obs_drift
@@ -203,17 +242,23 @@ contains
   !   nobs     : number of observations
   !   drift    : drift values [ndrift_c, nobs], Fortran order
   !=============================================================================
-  subroutine krige_set_obs_drift(handle, ivar, ndrift_c, nobs, drift) &
-      bind(C, name='krige_set_obs_drift')
+  integer(c_int) function krige_set_obs_drift(handle, ivar, ndrift_c, nobs, drift) &
+      bind(C, name='krige_set_obs_drift') result(ierr)
 
     integer(c_intptr_t), intent(in), value :: handle
     integer(c_int),      intent(in), value :: ivar, ndrift_c, nobs
     real(c_double),      intent(in) :: drift(ndrift_c, nobs)
 
     type(t_kriging), pointer :: obj
+    call kriging_clear_error()
     call get_obj(handle, obj)
+    if (kriging_failed()) then
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
     call obj%set_obs_drift(int(ivar), real(drift))
-  end subroutine krige_set_obs_drift
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_set_obs_drift
 
   !=============================================================================
   ! krige_set_vgm
@@ -232,10 +277,10 @@ contains
   !   a_minor2   : range along second minor direction
   !   azimuth, dip, plunge : rotation angles in degrees
   !=============================================================================
-  subroutine krige_set_vgm(handle, ivar, jvar, vtype, &
+  integer(c_int) function krige_set_vgm(handle, ivar, jvar, vtype, &
                             nugget, sill, a_major, a_minor1, a_minor2, &
                             azimuth, dip, plunge) &
-      bind(C, name='krige_set_vgm')
+      bind(C, name='krige_set_vgm') result(ierr)
 
     integer(c_intptr_t), intent(in), value :: handle
     integer(c_int),      intent(in), value :: ivar, jvar
@@ -244,12 +289,18 @@ contains
     real(c_double), intent(in), value :: azimuth, dip, plunge
 
     type(t_kriging), pointer :: obj
+    call kriging_clear_error()
     call get_obj(handle, obj)
+    if (kriging_failed()) then
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
     call obj%set_vgm(int(ivar), int(jvar), c2fstr(vtype), &
                      real(nugget), real(sill), real(a_major), &
                      real(a_minor1), real(a_minor2), &
                      real(azimuth), real(dip), real(plunge))
-  end subroutine krige_set_vgm
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_set_vgm
 
   !=============================================================================
   ! krige_set_vgm_block
@@ -270,10 +321,10 @@ contains
   !   a_minor2   : range along second minor direction
   !   azimuth, dip, plunge : rotation angles in degrees
   !=============================================================================
-  subroutine krige_set_vgm_block(handle, ivar, jvar, ib, vtype, &
+  integer(c_int) function krige_set_vgm_block(handle, ivar, jvar, ib, vtype, &
                                   nugget, sill, a_major, a_minor1, a_minor2, &
                                   azimuth, dip, plunge) &
-      bind(C, name='krige_set_vgm_block')
+      bind(C, name='krige_set_vgm_block') result(ierr)
 
     integer(c_intptr_t), intent(in), value :: handle
     integer(c_int),      intent(in), value :: ivar, jvar, ib
@@ -282,7 +333,12 @@ contains
     real(c_double), intent(in), value :: azimuth, dip, plunge
 
     type(t_kriging), pointer :: obj
+    call kriging_clear_error()
     call get_obj(handle, obj)
+    if (kriging_failed()) then
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
     call obj%set_vgm(int(ivar), int(jvar), &
                      vtype   = c2fstr(vtype), &
                      nugget  = real(nugget), &
@@ -294,7 +350,8 @@ contains
                      dip     = real(dip), &
                      plunge  = real(plunge), &
                      ib      = int(ib))
-  end subroutine krige_set_vgm_block
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_set_vgm_block
 
   !=============================================================================
   ! krige_set_grid
@@ -313,9 +370,9 @@ contains
   !   localnugget : additional per-block nugget [ngrid];
   !                 pass 0.0 for every element when not needed
   !=============================================================================
-  subroutine krige_set_grid(handle, ngrid, ndim_c, coord, &
+  integer(c_int) function krige_set_grid(handle, ngrid, ndim_c, coord, &
       rangescale, localnugget) &
-      bind(C, name='krige_set_grid')
+      bind(C, name='krige_set_grid') result(ierr)
 
     integer(c_intptr_t), intent(in), value :: handle
     integer(c_int),      intent(in), value :: ngrid, ndim_c
@@ -324,11 +381,17 @@ contains
     real(c_double),      intent(in) :: localnugget(ngrid)
 
     type(t_kriging), pointer :: obj
+    call kriging_clear_error()
     call get_obj(handle, obj)
+    if (kriging_failed()) then
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
     call obj%set_grid(coord       = real(coord), &
                       rangescale  = real(rangescale), &
                       localnugget = real(localnugget))
-  end subroutine krige_set_grid
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_set_grid
 
   !=============================================================================
   ! krige_set_grid_block
@@ -350,11 +413,11 @@ contains
   ! Note: pointweight length is sum(nblockpnt); Fortran derives it via
   ! size(pointweight) so no separate npw argument is needed.
   !=============================================================================
-  subroutine krige_set_grid_block(handle, block_type, &
+  integer(c_int) function krige_set_grid_block(handle, block_type, &
       ngrid, ndim_c, coord, &
       nblock, nblockpnt, pointweight, blocksize, &
       rangescale, localnugget) &
-      bind(C, name='krige_set_grid_block')
+      bind(C, name='krige_set_grid_block') result(ierr)
 
     integer(c_intptr_t), intent(in), value :: handle
     integer(c_int),      intent(in), value :: block_type
@@ -369,7 +432,12 @@ contains
 
     integer :: npw
     type(t_kriging), pointer :: obj
+    call kriging_clear_error()
     call get_obj(handle, obj)
+    if (kriging_failed()) then
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
     npw = sum(nblockpnt)   ! derive length instead of receiving it as an argument
     call obj%set_grid(coord       = real(coord), &
                       block_type  = int(block_type), &
@@ -378,7 +446,8 @@ contains
                       blocksize   = real(blocksize), &
                       rangescale  = real(rangescale), &
                       localnugget = real(localnugget))
-  end subroutine krige_set_grid_block
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_set_grid_block
 
   !=============================================================================
   ! krige_set_grid_cv
@@ -387,12 +456,18 @@ contains
   ! derives the grid from the observation coordinates automatically.
   ! Call instead of krige_set_grid when cross_validation=1.
   !=============================================================================
-  subroutine krige_set_grid_cv(handle) bind(C, name='krige_set_grid_cv')
+  integer(c_int) function krige_set_grid_cv(handle) bind(C, name='krige_set_grid_cv') result(ierr)
     integer(c_intptr_t), intent(in), value :: handle
     type(t_kriging), pointer :: obj
+    call kriging_clear_error()
     call get_obj(handle, obj)
+    if (kriging_failed()) then
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
     call obj%set_grid()
-  end subroutine krige_set_grid_cv
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_set_grid_cv
 
   !=============================================================================
   ! krige_set_grid_drift
@@ -406,17 +481,23 @@ contains
   !   nblocks  : number of blocks (= block%n, not grid%n)
   !   drift    : drift values [ndrift_c, nblocks], Fortran order
   !=============================================================================
-  subroutine krige_set_grid_drift(handle, ndrift_c, nblocks, drift) &
-      bind(C, name='krige_set_grid_drift')
+  integer(c_int) function krige_set_grid_drift(handle, ndrift_c, nblocks, drift) &
+      bind(C, name='krige_set_grid_drift') result(ierr)
 
     integer(c_intptr_t), intent(in), value :: handle
     integer(c_int),      intent(in), value :: ndrift_c, nblocks
     real(c_double),      intent(in) :: drift(ndrift_c, nblocks)
 
     type(t_kriging), pointer :: obj
+    call kriging_clear_error()
     call get_obj(handle, obj)
+    if (kriging_failed()) then
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
     call obj%set_grid_drift(real(drift))
-  end subroutine krige_set_grid_drift
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_set_grid_drift
 
   !=============================================================================
   ! krige_set_sim
@@ -436,8 +517,8 @@ contains
   ! Note: randpath length and sample second dimension are both nblocks, so a
   ! single parameter covers both — no separate n_rp / n_s needed.
   !=============================================================================
-  subroutine krige_set_sim(handle, nblocks, randpath, nsim_c, sample) &
-      bind(C, name='krige_set_sim')
+  integer(c_int) function krige_set_sim(handle, nblocks, randpath, nsim_c, sample) &
+      bind(C, name='krige_set_sim') result(ierr)
 
     integer(c_intptr_t), intent(in), value :: handle
     integer(c_int),      intent(in), value :: nblocks
@@ -446,9 +527,15 @@ contains
     real(c_double),      intent(in) :: sample(nsim_c, nblocks)
 
     type(t_kriging), pointer :: obj
+    call kriging_clear_error()
     call get_obj(handle, obj)
+    if (kriging_failed()) then
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
     call obj%set_sim(randpath = int(randpath), sample = real(sample))
-  end subroutine krige_set_sim
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_set_sim
 
   !=============================================================================
   ! krige_set_search
@@ -464,30 +551,42 @@ contains
   !   dip     : dip angle (degrees, positive downward)
   !   plunge  : plunge angle (degrees)
   !=============================================================================
-  subroutine krige_set_search(handle, ivar, anis1, anis2, azimuth, dip, plunge) &
-      bind(C, name='krige_set_search')
+  integer(c_int) function krige_set_search(handle, ivar, anis1, anis2, azimuth, dip, plunge) &
+      bind(C, name='krige_set_search') result(ierr)
 
     integer(c_intptr_t), intent(in), value :: handle
     integer(c_int),      intent(in), value :: ivar
     real(c_double),      intent(in), value :: anis1, anis2, azimuth, dip, plunge
 
     type(t_kriging), pointer :: obj
+    call kriging_clear_error()
     call get_obj(handle, obj)
+    if (kriging_failed()) then
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
     call obj%set_search(int(ivar), real(anis1), real(anis2), &
       real(azimuth), real(dip), real(plunge))
-  end subroutine krige_set_search
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_set_search
 
   !=============================================================================
   ! krige_prepare
   !
   ! Prepare the kriging or SGSIM block loop.
   !=============================================================================
-  subroutine krige_prepare(handle) bind(C, name='krige_prepare')
+  integer(c_int) function krige_prepare(handle) bind(C, name='krige_prepare') result(ierr)
     integer(c_intptr_t), intent(in), value :: handle
     type(t_kriging), pointer :: obj
+    call kriging_clear_error()
     call get_obj(handle, obj)
+    if (kriging_failed()) then
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
     call obj%prepare()
-  end subroutine krige_prepare
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_prepare
 
   !=============================================================================
   ! krige_solve
@@ -495,78 +594,191 @@ contains
   ! Runs the kriging or SGSIM block loop.
   ! After this returns, results are available via the getters below.
   !=============================================================================
-  subroutine krige_solve(handle) bind(C, name='krige_solve')
+  integer(c_int) function krige_solve(handle) bind(C, name='krige_solve') result(ierr)
     integer(c_intptr_t), intent(in), value :: handle
     type(t_kriging), pointer :: obj
+    call kriging_clear_error()
     call get_obj(handle, obj)
+    if (kriging_failed()) then
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
     call obj%solve()
-  end subroutine krige_solve
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_solve
 
   !=============================================================================
   ! Result getters
   !=============================================================================
 
   !-- Number of blocks = size of the estimate and variance arrays.
-  subroutine krige_get_nblocks(handle, n) bind(C, name='krige_get_nblocks')
+  integer(c_int) function krige_get_nblocks(handle, n) bind(C, name='krige_get_nblocks') result(ierr)
     integer(c_intptr_t), intent(in), value :: handle
     integer(c_int),      intent(out) :: n
     type(t_kriging), pointer :: obj
+    call kriging_clear_error()
+    n = 0_c_int
     call get_obj(handle, obj)
+    if (kriging_failed()) then
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
     n = int(obj%block%n, c_int)
-  end subroutine krige_get_nblocks
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_get_nblocks
 
   !-- Number of simulations (returns 1 for plain kriging).
-  subroutine krige_get_nsim(handle, n) bind(C, name='krige_get_nsim')
+  integer(c_int) function krige_get_nsim(handle, n) bind(C, name='krige_get_nsim') result(ierr)
     integer(c_intptr_t), intent(in), value :: handle
     integer(c_int),      intent(out) :: n
     type(t_kriging), pointer :: obj
+    call kriging_clear_error()
+    n = 0_c_int
     call get_obj(handle, obj)
+    if (kriging_failed()) then
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
     n = max(int(obj%nsim, c_int), 1_c_int)
-  end subroutine krige_get_nsim
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_get_nsim
 
   !-- Copy estimate(1:nsim_c, 1:nblocks) into the caller-allocated out array.
-  subroutine krige_get_estimate(handle, nsim_c, nblocks, out) &
-      bind(C, name='krige_get_estimate')
+  integer(c_int) function krige_get_estimate(handle, nsim_c, nblocks, out) &
+      bind(C, name='krige_get_estimate') result(ierr)
     integer(c_intptr_t), intent(in), value :: handle
     integer(c_int),      intent(in), value  :: nsim_c, nblocks
     real(c_double),      intent(out) :: out(nsim_c, nblocks)
     type(t_kriging), pointer :: obj
+    call kriging_clear_error()
     call get_obj(handle, obj)
+    if (kriging_failed()) then
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
     out = real(obj%block%estimate(1:nsim_c, 1:nblocks), c_double)
-  end subroutine krige_get_estimate
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_get_estimate
 
   !-- Copy variance(1:nblocks) into the caller-allocated out array.
-  subroutine krige_get_variance(handle, nblocks, out) &
-      bind(C, name='krige_get_variance')
+  integer(c_int) function krige_get_variance(handle, nblocks, out) &
+      bind(C, name='krige_get_variance') result(ierr)
     integer(c_intptr_t), intent(in), value :: handle
     integer(c_int),      intent(in), value  :: nblocks
     real(c_double),      intent(out) :: out(nblocks)
     type(t_kriging), pointer :: obj
+    call kriging_clear_error()
     call get_obj(handle, obj)
+    if (kriging_failed()) then
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
     out = real(obj%block%variance(1:nblocks), c_double)
-  end subroutine krige_get_variance
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_get_variance
+
+  integer(c_int) function krige_get_last_error(buffer, nbuf) &
+      bind(C, name='krige_get_last_error') result(ierr)
+    character(kind=c_char), intent(out) :: buffer(*)
+    integer(c_int), intent(in), value :: nbuf
+    call kriging_copy_error(buffer, int(nbuf))
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_get_last_error
 
   !-- Return a string representation of the kriging object.
-  function krige_to_str(self) result(ptr) bind(C, name='krige_to_str')
-    type(t_kriging), intent(in) :: self
+  function krige_to_str(handle) result(ptr) bind(C, name='krige_to_str')
+    integer(c_intptr_t), intent(in), value :: handle
     type(c_ptr) :: ptr
-    character(len=:), allocatable :: info
-    call self%update_info()
-    ptr = c_loc(self%krige_info(1))
+    type(t_kriging), pointer :: obj
+    call kriging_clear_error()
+    call get_obj(handle, obj)
+    if (kriging_failed()) then
+      ptr = c_null_ptr
+      return
+    end if
+    call obj%update_info()
+    ptr = c_loc(obj%krige_info(1))
   end function
 
   !=============================================================================
   ! Internal helpers (private to this module)
   !=============================================================================
 
-  !-- Recover a typed Fortran pointer from the opaque handle.
+  !-- Recover a typed Fortran pointer from the opaque handle.  Invalid or stale
+  !   handles record a normal kriging error instead of dereferencing garbage.
   subroutine get_obj(handle, obj)
     integer(c_intptr_t), intent(in), value :: handle
     type(t_kriging),     pointer    :: obj
-    type(c_ptr) :: cptr
-    cptr = transfer(handle, cptr)
-    call c_f_pointer(cptr, obj)
+    integer :: idx
+    nullify(obj)
+    if (handle == 0_c_intptr_t) then
+      call kriging_error('kriging_capi', 'Null kriging object handle')
+      return
+    end if
+    idx = int(handle)
+    if (.not. allocated(kriging_registry) .or. idx < 1 .or. idx > size(kriging_registry)) then
+      call kriging_error('kriging_capi', 'Invalid kriging object handle')
+      return
+    end if
+    if (associated(kriging_registry(idx)%obj)) obj => kriging_registry(idx)%obj
+    if (.not. associated(obj)) &
+      call kriging_error('kriging_capi', 'Invalid kriging object handle')
   end subroutine get_obj
+
+  subroutine store_obj(obj, handle)
+    ! Store a newly allocated object in the first free slot.  Growing the
+    ! registry keeps old slot numbers stable for existing Python objects.
+    type(t_kriging), pointer, intent(in) :: obj
+    integer(c_intptr_t), intent(out) :: handle
+    integer :: i
+
+    if (.not. allocated(kriging_registry)) allocate(kriging_registry(16))
+
+    do i = 1, size(kriging_registry)
+      if (.not. associated(kriging_registry(i)%obj)) then
+        kriging_registry(i)%obj => obj
+        handle = int(i, c_intptr_t)
+        return
+      end if
+    end do
+
+    call grow_registry()
+    do i = 1, size(kriging_registry)
+      if (.not. associated(kriging_registry(i)%obj)) then
+        kriging_registry(i)%obj => obj
+        handle = int(i, c_intptr_t)
+        return
+      end if
+    end do
+
+    handle = 0_c_intptr_t
+    call kriging_error('krige_create', 'Failed to allocate a kriging handle slot')
+  end subroutine store_obj
+
+  subroutine release_obj(handle)
+    ! Destroy leaves the slot reusable but does not compact the registry because
+    ! compacting would change handles held by other Python objects.
+    integer(c_intptr_t), intent(in), value :: handle
+    integer :: idx
+    idx = int(handle)
+    if (allocated(kriging_registry) .and. idx >= 1 .and. idx <= size(kriging_registry)) &
+      nullify(kriging_registry(idx)%obj)
+  end subroutine release_obj
+
+  subroutine grow_registry()
+    ! Double the slot array and preserve pointer associations manually; ordinary
+    ! assignment would copy the slot values but move_alloc makes ownership clear.
+    type(kriging_handle_slot), allocatable :: tmp(:)
+    integer :: i, old_n, new_n
+
+    old_n = size(kriging_registry)
+    new_n = max(1, old_n * 2)
+    allocate(tmp(new_n))
+    do i = 1, old_n
+      if (associated(kriging_registry(i)%obj)) tmp(i)%obj => kriging_registry(i)%obj
+    end do
+    call move_alloc(tmp, kriging_registry)
+  end subroutine grow_registry
 
   !-- Convert a null-terminated C string to a Fortran character(len=1024).
   function c2fstr(cstr) result(fstr)

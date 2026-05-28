@@ -11,6 +11,7 @@ program sparks
   use kdtree2_module
   use gaussian_quadrature
   use kriging                  ! provides t_kriging; replaces hand-rolled solve machinery
+  use kriging_err, only: kriging_failed, kriging_last_error
   implicit none
 
   character(8), parameter           :: sparks_version = '20260515'
@@ -249,7 +250,7 @@ program sparks
       case ("wm"); writemat = .true.
       case ("sa"); showargs = .true.
       case ("h"); call showhelp()
-      case default; stop
+      case default; call perr("  Error: unknown command-line option.")
       end select
       ! Safety exit: if -d was never parsed, ndrift stays at its sentinel value (-1).
       ! The sanity check below will report the error; no need to keep parsing.
@@ -343,6 +344,7 @@ program sparks
     bounds=[vmin, vmax], &
     sk_mean=sk_mean, &
     seed=seed)
+  call stop_if_kriging_failed('initializing kriging')
 
   ! ---- allocations ----------------------------------------------------
   ! Allocate all major arrays up-front using dimension scalars already known
@@ -405,6 +407,7 @@ program sparks
   if (showargs) call showoptions()
   ! ---- hand data to t_kriging and solve -------------------------------------
   call krig%solve()
+  call stop_if_kriging_failed('solving kriging system')
   call write_output()
   call krig%finalize()
   if (verbose) print *, "SPARKS exited peacefully."
@@ -473,6 +476,7 @@ contains
                       nugget=nugget, sill=sill, &
                       a_major=a_major, a_minor1=a_minor1, a_minor2=a_minor2, &
                       azimuth=ang1, dip=ang2, plunge=ang3)
+    call stop_if_kriging_failed('setting variogram')
   end subroutine apply_vgm_
 
   subroutine set_vgm_()
@@ -507,7 +511,11 @@ contains
     else
       call krig%set_obs(ivar=ivar, coord=obs(1:ndim, :), value=obs(ndim + 1, :), nmax=nmax, maxdist=maxdist)
     end if
-    if (ndrift > 0) call krig%set_obs_drift(ivar, obsdrift)
+    call stop_if_kriging_failed('setting observations')
+    if (ndrift > 0) then
+      call krig%set_obs_drift(ivar, obsdrift)
+      call stop_if_kriging_failed('setting observation drift')
+    end if
   end subroutine set_obs_
 
   subroutine set_grid_()
@@ -515,6 +523,7 @@ contains
     ! LOOCV mode, grid is not needed
     nblock = nobs1
     call krig%set_grid()
+    call stop_if_kriging_failed('setting LOOCV grid')
   else
     if (verbose) print *, 'Reading BLOCK in "'//trim(blockfile)//'"'
     if (ndrift > 0) then
@@ -558,7 +567,11 @@ contains
       ! spread() broadcasts the 1-D blocksize vector into a (ndim, nblock) matrix.
       call krig%set_grid(blocks(:ndim,:), block_type, blocksize=spread(blocksize, 2, nblock), rangescale=rangescale, localnugget=localnugget)
     end if
-    if (ndrift > 0) call krig%set_grid_drift(blockdrift)
+    call stop_if_kriging_failed('setting grid')
+    if (ndrift > 0) then
+      call krig%set_grid_drift(blockdrift)
+      call stop_if_kriging_failed('setting grid drift')
+    end if
   end if
   end subroutine set_grid_
 
@@ -587,11 +600,16 @@ contains
         call krig%set_sim()
       end if
     end if
+    call stop_if_kriging_failed('setting simulation inputs')
   end subroutine set_sim_
 
   subroutine set_search_()
     call krig%set_search(1, anis1, anis2, ang1, ang2, ang3)
-    if (nobs2 > 0) call krig%set_search(2, anis1, anis2, ang1, ang2, ang3)
+    call stop_if_kriging_failed('setting primary search')
+    if (nobs2 > 0) then
+      call krig%set_search(2, anis1, anis2, ang1, ang2, ang3)
+      call stop_if_kriging_failed('setting secondary search')
+    end if
   end subroutine set_search_
 
   ! ===========================================================================
@@ -649,8 +667,23 @@ contains
   subroutine perr(msg)
     character(*) :: msg
     write (error_unit, '(A)') msg
-    stop
+    ! SPARKS is an executable, so STOP exits only this CLI process.  Library
+    ! code still records errors through kriging_err so Python callers survive.
+    stop 1, quiet=.true.
   end subroutine perr
+
+  subroutine stop_if_kriging_failed(stage)
+    character(*), intent(in) :: stage
+    character(len=:), allocatable :: msg
+
+    if (.not. kriging_failed()) return
+
+    ! t_kriging no longer stops internally.  The CLI checks the shared error
+    ! state after each kriging call and converts it to a normal program exit.
+    msg = kriging_last_error()
+    if (len_trim(msg) == 0) msg = 'unknown kriging error'
+    call perr('  Error while '//trim(stage)//': '//trim(msg))
+  end subroutine stop_if_kriging_failed
 
   ! ===========================================================================
   ! Diagnostic output (showoptions, showhelp)
@@ -687,7 +720,7 @@ contains
     print "(A)", '      output'//repeat(' ', 22)// &
       'output file name. "~" or omitted = stdout.'
     print "(A)", ' '
-    stop
+    stop 0, quiet=.true.
   end subroutine showhelp
 
   ! Word-wrap opts(idx)%description at DESCW characters, breaking on spaces where

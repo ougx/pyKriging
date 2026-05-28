@@ -70,6 +70,7 @@ _lib = _load_lib()
 # ---------------------------------------------------------------------------
 _c_int    = ctypes.c_int
 _c_double = ctypes.c_double
+_ptr_char = ctypes.POINTER(ctypes.c_char)
 _ptr_dbl  = ctypes.POINTER(ctypes.c_double)
 _ptr_int  = ctypes.POINTER(ctypes.c_int)
 _ptr_int64 = ctypes.POINTER(ctypes.c_int64)
@@ -80,12 +81,28 @@ def _cfun(name, argtypes, restype=None):
     fn.restype  = restype
     return fn
 
+def _status_cfun(name, argtypes):
+    """Wrap an ST C API function that returns ierr.
+
+    The DLL records the detailed Fortran error message separately.  This helper
+    checks ierr after every call and raises RuntimeError in Python instead of
+    letting the wrapper proceed with an invalid Fortran object state.
+    """
+    fn = _cfun(name, argtypes, _c_int)
+
+    def checked(*args):
+        _check(fn(*args), name)
+
+    checked.__name__ = name
+    checked._cfunc = fn
+    return checked
+
 # ---------------------------------------------------------------------------
 # Declare all krige_st_* C entry points
 # ---------------------------------------------------------------------------
-_st_create     = _cfun("krige_st_create",     [_ptr_int64])
-_st_destroy    = _cfun("krige_st_destroy",    [_ptr_int64])
-_st_initialize = _cfun("krige_st_initialize", [
+_st_create     = _status_cfun("krige_st_create",     [_ptr_int64])
+_st_destroy    = _status_cfun("krige_st_destroy",    [_ptr_int64])
+_st_initialize = _status_cfun("krige_st_initialize", [
     ctypes.c_int64,
     _c_int, _c_int, _c_int, _c_int,        # nvar ndrift unbias nsim
     _c_int, _c_int, _c_int, _c_int,        # aniso_search weight_corr use_old store_weight
@@ -95,54 +112,55 @@ _st_initialize = _cfun("krige_st_initialize", [
     _c_double,                              # sk_mean
     _c_int,                                 # seed
 ])
-_st_set_st_model = _cfun("krige_st_set_st_model", [
+_st_set_st_model = _status_cfun("krige_st_set_st_model", [
     ctypes.c_int64, _c_int, _c_int, _c_double, _c_double, _c_double,
 ])
-_st_set_obs = _cfun("krige_st_set_obs", [
+_st_set_obs = _status_cfun("krige_st_set_obs", [
     ctypes.c_int64,
     _c_int, _c_int,          # ivar, nobs
     _ptr_dbl, _ptr_dbl,      # coord[3,nobs], value[nobs]
     _ptr_dbl, _ptr_dbl,      # time[nobs], variance[nobs]
     _c_int, _c_double, _c_double,  # nmax, maxdist, maxtlag
 ])
-_st_set_obs_drift = _cfun("krige_st_set_obs_drift", [
+_st_set_obs_drift = _status_cfun("krige_st_set_obs_drift", [
     ctypes.c_int64, _c_int, _c_int, _c_int, _ptr_dbl,
 ])
-_st_set_vgm = _cfun("krige_st_set_vgm", [
+_st_set_vgm = _status_cfun("krige_st_set_vgm", [
     ctypes.c_int64, _c_int, _c_int, ctypes.c_char_p,
 ])
-_st_set_vgm_temporal = _cfun("krige_st_set_vgm_temporal", [
+_st_set_vgm_temporal = _status_cfun("krige_st_set_vgm_temporal", [
     ctypes.c_int64, _c_int, _c_int, ctypes.c_char_p,
 ])
-_st_set_vgm_joint_sills = _cfun("krige_st_set_vgm_joint_sills", [
+_st_set_vgm_joint_sills = _status_cfun("krige_st_set_vgm_joint_sills", [
     ctypes.c_int64, _c_int, _c_int, _c_int, _ptr_dbl,
 ])
-_st_set_grid = _cfun("krige_st_set_grid", [
+_st_set_grid = _status_cfun("krige_st_set_grid", [
     ctypes.c_int64, _c_int, _ptr_dbl, _ptr_dbl, _ptr_dbl, _ptr_dbl,
 ])
-_st_set_grid_block = _cfun("krige_st_set_grid_block", [
+_st_set_grid_block = _status_cfun("krige_st_set_grid_block", [
     ctypes.c_int64, _c_int,          # nblocks
     _ptr_dbl, _ptr_dbl,              # coord[3,nblocks], time[nblocks]
     _ptr_int, _c_int,                # nblockpnt[nblocks], npnts_total
     _ptr_dbl, _ptr_dbl, _ptr_dbl,   # blockcoord, blocktime, pointweight
     _ptr_dbl, _ptr_dbl,              # rangescale, localnugget
 ])
-_st_set_grid_cv    = _cfun("krige_st_set_grid_cv",    [ctypes.c_int64])
-_st_set_grid_drift = _cfun("krige_st_set_grid_drift", [
+_st_set_grid_cv    = _status_cfun("krige_st_set_grid_cv",    [ctypes.c_int64])
+_st_set_grid_drift = _status_cfun("krige_st_set_grid_drift", [
     ctypes.c_int64, _c_int, _c_int, _ptr_dbl,
 ])
-_st_set_sim = _cfun("krige_st_set_sim", [
+_st_set_sim = _status_cfun("krige_st_set_sim", [
     ctypes.c_int64, _c_int, _ptr_int, _c_int, _ptr_dbl,
 ])
-_st_set_search = _cfun("krige_st_set_search", [
+_st_set_search = _status_cfun("krige_st_set_search", [
     ctypes.c_int64, _c_int,
     _c_double, _c_double, _c_double, _c_double, _c_double,
 ])
-_st_solve         = _cfun("krige_st_solve",         [ctypes.c_int64])
-_st_get_nblocks   = _cfun("krige_st_get_nblocks",   [ctypes.c_int64, _ptr_int])
-_st_get_nsim      = _cfun("krige_st_get_nsim",      [ctypes.c_int64, _ptr_int])
-_st_get_estimate  = _cfun("krige_st_get_estimate",  [ctypes.c_int64, _c_int, _c_int, _ptr_dbl])
-_st_get_variance  = _cfun("krige_st_get_variance",  [ctypes.c_int64, _c_int, _ptr_dbl])
+_st_solve         = _status_cfun("krige_st_solve",         [ctypes.c_int64])
+_st_get_nblocks   = _status_cfun("krige_st_get_nblocks",   [ctypes.c_int64, _ptr_int])
+_st_get_nsim      = _status_cfun("krige_st_get_nsim",      [ctypes.c_int64, _ptr_int])
+_st_get_estimate  = _status_cfun("krige_st_get_estimate",  [ctypes.c_int64, _c_int, _c_int, _ptr_dbl])
+_st_get_variance  = _status_cfun("krige_st_get_variance",  [ctypes.c_int64, _c_int, _ptr_dbl])
+_get_last_error   = _cfun("krige_get_last_error", [_ptr_char, _c_int], _c_int)
 
 # ---------------------------------------------------------------------------
 # String constants for the Python API
@@ -171,6 +189,18 @@ def _iptr(a):
 
 def _h(handle: int) -> ctypes.c_int64:
     return ctypes.c_int64(handle)
+
+def _last_error() -> str:
+    """Return the last Fortran error message recorded by kriging.dll."""
+    buf = ctypes.create_string_buffer(4096)
+    _get_last_error(buf, _c_int(len(buf)))
+    return buf.value.decode("utf-8", errors="replace").strip()
+
+def _check(ierr: int, call_name: str) -> None:
+    """Raise a Python exception when a Fortran C API call reports failure."""
+    if int(ierr) != 0:
+        msg = _last_error() or f"{call_name} failed with ierr={int(ierr)}"
+        raise RuntimeError(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -528,7 +558,10 @@ class SpaceTimeKriging:
     def __del__(self):
         if self._handle != 0:
             _tmp = ctypes.c_int64(self._handle)
-            _st_destroy(ctypes.byref(_tmp))
+            try:
+                _st_destroy(ctypes.byref(_tmp))
+            except Exception:
+                pass
             self._handle = 0
 
     def __repr__(self):
