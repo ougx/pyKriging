@@ -58,6 +58,84 @@ def _run(coord, value, grid, vgm_spec=(_VGM_PC2D,), nmax=_NMAX, **kw):
     return ordinary_kriging(coord, value, grid, vgm_spec, nmax, **kw)
 
 
+class TestVariogramTypes:
+    """Coverage for every variogram type accepted by the Fortran model parser."""
+
+    @pytest.mark.parametrize("vtype", ["nug", "sph", "exp", "hol", "gau", "pow", "bsq", "cir", "lin"])
+    def test_set_vgm_preserves_requested_type(self, vtype):
+        coord = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
+        value = np.array([1.0, 2.0, 1.5])
+
+        k = Kriging(ndim=2, nvar=1, verbose=0)
+        k.set_obs(ivar=1, coord=coord, value=value, nmax=3)
+        k.set_vgm(ivar=1, jvar=1, vtype=vtype, nugget=0.0, sill=0.2, a_major=10.0)
+
+        assert f"    {vtype}  sill=" in k.get_info()
+
+    def test_unknown_vtype_raises_fortran_error(self):
+        coord = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
+        value = np.array([1.0, 2.0, 1.5])
+
+        k = Kriging(ndim=2, nvar=1, verbose=0)
+        k.set_obs(ivar=1, coord=coord, value=value, nmax=3)
+
+        with pytest.raises(RuntimeError, match="unknown variogram type"):
+            k.set_vgm(ivar=1, jvar=1, vtype="bad", nugget=0.0, sill=0.2, a_major=10.0)
+
+
+class TestVaryingVariogram:
+    """Regression coverage for per-block variogram storage and solve-time use."""
+
+    def _solve_with_vgm(self, coord, value, grid, vgm):
+        k = Kriging(ndim=2, nvar=1, verbose=0)
+        k.set_obs(ivar=1, coord=coord, value=value, nmax=_NMAX)
+        k.set_vgm(ivar=1, jvar=1, **vgm)
+        k.set_grid(coord=grid)
+        k.set_search(ivar=1)
+        k.solve()
+        return k.get_results()
+
+    def test_set_vgm_block_matches_separate_per_block_solves(self, pc2d_obs):
+        coord, value = pc2d_obs
+        vgm_long = dict(vtype="sph", nugget=0.0, sill=0.12, a_major=5000.0)
+        vgm_short = dict(vtype="sph", nugget=0.0, sill=0.12, a_major=500.0)
+
+        k = Kriging(ndim=2, nvar=1, varying_vgm=True, verbose=0)
+        k.set_obs(ivar=1, coord=coord, value=value, nmax=_NMAX)
+        k.set_grid(coord=_INTERIOR_GRID)
+        k.set_vgm_block(ib=1, ivar=1, jvar=1, **vgm_long)
+        k.set_vgm_block(ib=2, ivar=1, jvar=1, **vgm_short)
+        k.set_search(ivar=1)
+        k.solve()
+        est_varying, var_varying = k.get_results()
+
+        est_1, var_1 = self._solve_with_vgm(coord, value, _INTERIOR_GRID[:1], vgm_long)
+        est_2, var_2 = self._solve_with_vgm(coord, value, _INTERIOR_GRID[1:], vgm_short)
+
+        np.testing.assert_allclose(est_varying, [est_1[0], est_2[0]], rtol=1e-6)
+        np.testing.assert_allclose(var_varying, [var_1[0], var_2[0]], rtol=1e-6)
+
+    def test_varying_vgm_sgsim_smoke(self, pc2d_obs):
+        coord, value = pc2d_obs
+
+        k = Kriging(ndim=2, nvar=1, nsim=1, varying_vgm=True, verbose=0, seed=42)
+        k.set_obs(ivar=1, coord=coord, value=value, nmax=_NMAX)
+        k.set_grid(coord=_INTERIOR_GRID)
+        k.set_vgm_block(ib=1, ivar=1, jvar=1, **_VGM_LONG)
+        k.set_vgm_block(ib=2, ivar=1, jvar=1, **_VGM_SHORT)
+        k.set_sim(
+            randpath=np.array([1, 2], dtype=np.int32),
+            sample=np.zeros((1, _INTERIOR_GRID.shape[0])),
+        )
+        k.set_search(ivar=1)
+        k.solve()
+        sims, var = k.get_results()
+
+        assert sims.shape == (_INTERIOR_GRID.shape[0],)
+        assert np.all(np.isfinite(sims))
+        assert np.all(var >= 0.0)
+
+
 # ===========================================================================
 # cross-validation accuracy
 # ===========================================================================

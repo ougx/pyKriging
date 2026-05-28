@@ -211,6 +211,74 @@ class TestBlockKriging:
         np.testing.assert_allclose(est_gq, est_explicit, rtol=1e-5, atol=1e-5)
         np.testing.assert_allclose(var_gq, var_explicit, rtol=1e-5, atol=1e-5)
 
+    def test_gaussian_quadrature_multiple_blocks_allow_different_sizes(self, block_data):
+        """Each block center may use its own Gaussian quadrature block size."""
+        d = block_data
+        centers = np.vstack([
+            d["block_centroid"][0],
+            d["block_centroid"][0] + np.array([1500.0, -1000.0]),
+        ])
+        blocksize = np.array([
+            [2000.0, 2000.0],
+            [1000.0, 3000.0],
+        ])
+
+        k = Kriging(ndim=2, nvar=1, verbose=0)
+        k.set_obs(ivar=1, coord=d["coord"], value=d["value"], nmax=_NMAX)
+        k.set_vgm(ivar=1, jvar=1, **_VGM)
+        k.set_grid_block(
+            coord=centers,
+            block_type=-4,
+            nblockpnt=np.ones(centers.shape[0], dtype=np.int32),
+            blocksize=blocksize,
+        )
+        k.set_search(ivar=1)
+        k.solve()
+        est, var = k.get_results()
+
+        assert est.shape == (centers.shape[0],)
+        assert var.shape == (centers.shape[0],)
+        assert np.all(np.isfinite(est))
+        assert np.all(var >= 0.0)
+
+    def test_gaussian_quadrature_3d_smoke(self):
+        """block_type=-4 should generate valid quadrature support in 3D."""
+        coord = np.array([
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [0.0, 10.0, 0.0],
+            [0.0, 0.0, 10.0],
+            [10.0, 10.0, 10.0],
+        ])
+        value = np.array([1.0, 2.0, 1.5, 2.5, 3.0])
+        center = np.array([[5.0, 5.0, 5.0]])
+
+        k = Kriging(ndim=3, nvar=1, verbose=0)
+        k.set_obs(ivar=1, coord=coord, value=value, nmax=5)
+        k.set_vgm(
+            ivar=1,
+            jvar=1,
+            vtype="sph",
+            nugget=0.0,
+            sill=1.0,
+            a_major=20.0,
+            a_minor1=20.0,
+            a_minor2=20.0,
+        )
+        k.set_grid_block(
+            coord=center,
+            block_type=-4,
+            nblockpnt=np.array([1], dtype=np.int32),
+            blocksize=np.array([2.0, 4.0, 6.0]),
+        )
+        k.set_search(ivar=1)
+        k.solve()
+        est, var = k.get_results()
+
+        assert est.shape == (1,)
+        assert np.isfinite(est[0])
+        assert var[0] >= 0.0
+
     def test_block_kriging_localnugget(self, block_data):
         """localnugget can be set per block; positive value increases block variance."""
         d = block_data

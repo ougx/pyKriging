@@ -373,7 +373,7 @@ class Kriging:
         use_old_weight : bool
             Read pre-computed weights from ``weight_file`` instead of solving.
         store_weight : bool
-            Write computed weights to ``weight_file`` (skips estimate_block).
+            Write computed weights to ``weight_file`` while also estimating blocks.
         cross_validation : bool
             Leave-one-out cross-validation mode.
         write_mat : bool
@@ -506,12 +506,22 @@ class Kriging:
         """
         import sys
         coord_f  = _coord_to_fortran(coord)        # (nobs, ndim) -> (ndim, nobs) F-order
-        value_f  = _farray(value.ravel())           # ensure 1-D
+        value_f  = _farray(np.asarray(value, dtype=np.float64).ravel())
         nobs     = coord_f.shape[1]
         ndim_c   = coord_f.shape[0]
 
-        # variance: always passed; default to zeros
-        var_f = _farray(variance) if variance is not None else _farray(np.zeros(nobs))
+        # The C API receives value(nobs) and variance(nobs) raw pointers; check
+        # lengths here so ctypes never lets Fortran read past a NumPy buffer.
+        if value_f.size != nobs:
+            raise ValueError(
+                f"value length ({value_f.size}) must match nobs ({nobs})")
+        if variance is not None:
+            var_f = _farray(np.asarray(variance, dtype=np.float64).ravel())
+            if var_f.size != nobs:
+                raise ValueError(
+                    f"variance length ({var_f.size}) must match nobs ({nobs})")
+        else:
+            var_f = _farray(np.zeros(nobs))
 
         # nmax/maxdist: pass huge values when not specified (Fortran treats as "unlimited")
         c_nmax    = _c_int(nmax    if nmax    is not None else np.iinfo(np.int32).max)
@@ -755,10 +765,21 @@ class Kriging:
         else:
             nbp_f   = np.ascontiguousarray(nblockpnt, dtype=np.int32)
             nblock  = len(nblockpnt)
+            npoint  = int(np.sum(nbp_f))
+            # Fortran derives the pointweight length from sum(nblockpnt) and
+            # reads coord(:,1:sum(nblockpnt)); reject inconsistent block maps
+            # before a raw pointer can be indexed out of bounds.
+            if np.any(nbp_f <= 0):
+                raise ValueError("nblockpnt must contain positive counts")
+            if npoint != ngrid:
+                raise ValueError(
+                    f"sum(nblockpnt) ({npoint}) must match coord rows ({ngrid})")
             blocksize_f = _coord_to_fortran(np.zeros((nblock, self.ndim)))
             if pointweight is not None:
-                assert len(pointweight) == sum(nblockpnt), (
-                    f"pointweight should be (sum(nblockpnt)={sum(nblockpnt)})")
+                if len(pointweight) != npoint:
+                    raise ValueError(
+                        f"pointweight length ({len(pointweight)}) must match "
+                        f"sum(nblockpnt) ({npoint})")
                 pw_f = _farray(pointweight)
             else:
                 # uniform weights: 1/nblockpnt for each sub-node
@@ -847,16 +868,32 @@ class Kriging:
         nblocks = nb.value
         rng = np.random.default_rng(self.seed)
         if randpath is not None:
-            rp_f = np.ascontiguousarray(randpath, dtype=np.int32)
+            rp_f = np.ascontiguousarray(
+                np.asarray(randpath, dtype=np.int32).ravel(), dtype=np.int32)
+            # randpath is consumed as a 1-based Fortran permutation of blocks.
+            # Validate both length and membership before exposing the buffer.
+            if rp_f.size != nblocks:
+                raise ValueError(
+                    f"randpath length ({rp_f.size}) must match nblocks ({nblocks})")
+            expected_path = np.arange(1, nblocks + 1, dtype=np.int32)
+            if not np.array_equal(np.sort(rp_f), expected_path):
+                raise ValueError("randpath must be a 1-based permutation of 1..nblocks")
         else:
             # random permutation of 1..nblocks (1-based for Fortran)
             rp_f = np.ascontiguousarray(
                 rng.permutation(nblocks) + 1, dtype=np.int32)
 
         if sample is not None:
-            s_f    = _farray(sample)
+            sample_a = np.asarray(sample, dtype=np.float64)
+            if sample_a.ndim == 1:
+                sample_a = sample_a.reshape(1, -1)
+            s_f    = _farray(sample_a)
             nsim_c = s_f.shape[0]
             n_s    = s_f.shape[1]
+            if (nsim_c, n_s) != (self.nsim, nblocks):
+                raise ValueError(
+                    f"sample shape ({nsim_c}, {n_s}) must be "
+                    f"({self.nsim}, {nblocks})")
         else:
             nsim_c = self.nsim
             n_s    = nblocks

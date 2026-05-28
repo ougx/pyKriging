@@ -13,6 +13,18 @@ _VGM = dict(vtype="sph", nugget=0.0, sill=1.0, a_major=50.0)
 _VGM_PC2D = dict(vtype="sph", nugget=0.0, sill=0.12, a_major=5000.0)
 _NMAX = 20
 
+_SMALL_COORD = np.array([
+    [0.0, 0.0],
+    [1.0, 0.0],
+    [0.0, 1.0],
+    [1.0, 1.0],
+])
+_SMALL_VALUE = np.array([1.0, 2.0, 1.5, 2.5])
+_SMALL_GRID = np.array([
+    [0.25, 0.25],
+    [0.75, 0.75],
+])
+
 # Two interior grid points not co-located with any observation
 _INTERIOR_GRID = np.array([[580000.0, 4395000.0],
                             [578000.0, 4400000.0]])
@@ -54,6 +66,126 @@ class TestInputValidation:
         assert "Number of Variables    : 1" in str(k)
         assert "Number of data         : 5" in str(k)
         assert "Number of structures = 0" in str(k)
+
+    def test_set_obs_value_wrong_length_raises(self):
+        """Python checks value length before passing a raw pointer to Fortran."""
+        k = Kriging(ndim=2, nvar=1, verbose=0)
+        with pytest.raises(ValueError, match="value length"):
+            k.set_obs(ivar=1, coord=_SMALL_COORD, value=_SMALL_VALUE[:-1])
+
+    def test_set_obs_variance_wrong_length_raises(self):
+        """Python checks variance length before passing a raw pointer to Fortran."""
+        k = Kriging(ndim=2, nvar=1, verbose=0)
+        with pytest.raises(ValueError, match="variance length"):
+            k.set_obs(
+                ivar=1,
+                coord=_SMALL_COORD,
+                value=_SMALL_VALUE,
+                variance=np.zeros(_SMALL_VALUE.size - 1),
+            )
+
+    def test_set_grid_block_nblockpnt_sum_mismatch_raises(self):
+        """Block maps must not claim more sub-nodes than coord provides."""
+        k = Kriging(ndim=2, nvar=1, verbose=0)
+        k.set_obs(ivar=1, coord=_SMALL_COORD, value=_SMALL_VALUE, nmax=4)
+        with pytest.raises(ValueError, match=r"sum\(nblockpnt\).*coord rows"):
+            k.set_grid_block(
+                coord=_SMALL_COORD[:3],
+                block_type=1,
+                nblockpnt=np.array([2, 2], dtype=np.int32),
+            )
+
+    def test_set_sim_randpath_wrong_length_raises(self):
+        """SGSIM path length is checked before calling the C API."""
+        k = Kriging(ndim=2, nvar=1, nsim=1, verbose=0, seed=11)
+        k.set_obs(ivar=1, coord=_SMALL_COORD, value=_SMALL_VALUE, nmax=4)
+        k.set_grid(coord=_SMALL_GRID)
+        with pytest.raises(ValueError, match="randpath length"):
+            k.set_sim(randpath=np.array([1], dtype=np.int32))
+
+    def test_set_sim_randpath_must_be_permutation(self):
+        """SGSIM path must be a 1-based permutation of the block numbers."""
+        k = Kriging(ndim=2, nvar=1, nsim=1, verbose=0, seed=11)
+        k.set_obs(ivar=1, coord=_SMALL_COORD, value=_SMALL_VALUE, nmax=4)
+        k.set_grid(coord=_SMALL_GRID)
+        with pytest.raises(ValueError, match="1-based permutation"):
+            k.set_sim(randpath=np.array([1, 1], dtype=np.int32))
+
+    def test_set_sim_sample_wrong_shape_raises(self):
+        """SGSIM sample matrix must match (nsim, nblocks)."""
+        k = Kriging(ndim=2, nvar=1, nsim=2, verbose=0, seed=11)
+        k.set_obs(ivar=1, coord=_SMALL_COORD, value=_SMALL_VALUE, nmax=4)
+        k.set_grid(coord=_SMALL_GRID)
+        with pytest.raises(ValueError, match="sample shape"):
+            k.set_sim(
+                randpath=np.array([1, 2], dtype=np.int32),
+                sample=np.zeros((1, _SMALL_GRID.shape[0])),
+            )
+
+    def test_set_grid_before_obs_raises_runtime_error(self):
+        """Fortran ierr is surfaced when workflow calls are out of order."""
+        k = Kriging(ndim=2, nvar=1, verbose=0)
+        with pytest.raises(RuntimeError, match="Observation|set_obs"):
+            k.set_grid(coord=_SMALL_GRID)
+
+    def test_set_search_before_obs_raises_runtime_error(self):
+        """set_search depends on observations and should report status cleanly."""
+        k = Kriging(ndim=2, nvar=1, verbose=0)
+        with pytest.raises(RuntimeError, match="Observation|set_obs"):
+            k.set_search(ivar=1)
+
+    def test_solve_without_search_raises_runtime_error(self):
+        """solve should refuse to continue until every variable has search set."""
+        k = Kriging(ndim=2, nvar=1, verbose=0)
+        k.set_obs(ivar=1, coord=_SMALL_COORD, value=_SMALL_VALUE, nmax=4)
+        k.set_vgm(ivar=1, jvar=1, **_VGM)
+        k.set_grid(coord=_SMALL_GRID)
+        with pytest.raises(RuntimeError, match="set_search"):
+            k.solve()
+
+    def test_obs_drift_before_obs_raises_runtime_error(self):
+        """Drift setup before observations should be reported through ierr."""
+        k = Kriging(ndim=2, nvar=1, ndrift=1, verbose=0)
+        with pytest.raises(RuntimeError, match="Observation|set_obs"):
+            k.set_obs_drift(ivar=1, drift=np.ones((_SMALL_COORD.shape[0], 1)))
+
+
+class TestOperationalModes:
+
+    def _solve(self, **kwargs):
+        k = Kriging(ndim=2, nvar=1, verbose=0, **kwargs)
+        k.set_obs(ivar=1, coord=_SMALL_COORD, value=_SMALL_VALUE, nmax=4)
+        k.set_vgm(ivar=1, jvar=1, **_VGM)
+        k.set_grid(coord=_SMALL_GRID)
+        k.set_search(ivar=1)
+        k.solve()
+        return k.get_results()
+
+    def test_weight_file_roundtrip_matches_normal_solve(self, tmp_path):
+        """Stored weights should be reusable without changing estimates."""
+        weight_file = tmp_path / "weights.fac"
+        est_ref, var_ref = self._solve()
+
+        self._solve(store_weight=True, weight_file=str(weight_file))
+        assert weight_file.exists()
+        assert weight_file.stat().st_size > 0
+
+        est_old, var_old = self._solve(use_old_weight=True, weight_file=str(weight_file))
+        np.testing.assert_allclose(est_old, est_ref, rtol=1e-10, atol=1e-10)
+        np.testing.assert_allclose(var_old, var_ref, rtol=1e-10, atol=1e-10)
+
+    def test_write_mat_with_openmp_writes_debug_files(self, tmp_path, monkeypatch):
+        """write_mat should be safe under OpenMP and write one file set per block."""
+        monkeypatch.setenv("OMP_NUM_THREADS", "2")
+        monkeypatch.chdir(tmp_path)
+
+        est, var = self._solve(write_mat=True)
+
+        assert np.all(np.isfinite(est))
+        assert np.all(var >= 0.0)
+        assert len(list(tmp_path.glob("data_*.csv"))) == _SMALL_GRID.shape[0]
+        assert len(list(tmp_path.glob("matA_*.csv"))) == _SMALL_GRID.shape[0]
+        assert len(list(tmp_path.glob("rhsB_*.csv"))) == _SMALL_GRID.shape[0]
 
 
 # ---------------------------------------------------------------------------
