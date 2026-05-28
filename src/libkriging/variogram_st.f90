@@ -46,7 +46,7 @@
 !   Joint sills (sum-metric): sill_st_12^2 <= sill_st_11 * sill_st_22
 !==============================================================================
 module variogram_st
-
+  use kriging_err, only: kriging_error
   use variogram
   implicit none
   private
@@ -222,7 +222,7 @@ contains
     real,                 intent(in)    :: sills(n)
 
     if (n /= this%cs%nstruct) &
-      error stop 'vgm_struct_st%set_joint_sills: length of sills must equal cs%nstruct'
+      call kriging_error("set_joint_sills_vgm_st", 'vgm_struct_st%set_joint_sills: length of sills must equal cs%nstruct')
     if (allocated(this%sill_st)) deallocate(this%sill_st)
     allocate(this%sill_st(n))
     this%sill_st = sills

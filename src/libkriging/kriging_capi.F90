@@ -352,7 +352,7 @@ contains
   !=============================================================================
   subroutine krige_set_grid_block(handle, block_type, &
       ngrid, ndim_c, coord, &
-      nblock, nblockpnt, pointweight, &
+      nblock, nblockpnt, pointweight, blocksize, &
       rangescale, localnugget) &
       bind(C, name='krige_set_grid_block')
 
@@ -363,6 +363,7 @@ contains
     integer(c_int),      intent(in), value :: nblock
     integer(c_int),      intent(in) :: nblockpnt(nblock)
     real(c_double),      intent(in) :: pointweight(*)   ! length = sum(nblockpnt)
+    real(c_double),      intent(in) :: blocksize(ndim_c, nblock)     ! length = 3
     real(c_double),      intent(in) :: rangescale(nblock)
     real(c_double),      intent(in) :: localnugget(nblock)
 
@@ -374,6 +375,7 @@ contains
                       block_type  = int(block_type), &
                       nblockpnt   = int(nblockpnt), &
                       pointweight = real(pointweight(1:npw)), &
+                      blocksize   = real(blocksize), &
                       rangescale  = real(rangescale), &
                       localnugget = real(localnugget))
   end subroutine krige_set_grid_block

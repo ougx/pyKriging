@@ -131,6 +131,7 @@ module kriging
     type(kdtree2), pointer :: tree => null()   ! k-d tree for fast NN search
     logical              :: need_search = .false.      ! .true. if nmax < n
     logical              :: anisotropic_search = .false. ! search in rotated coords
+    logical              :: set_search = .false. ! track if search has been set
   end type t_obsgrid
 
   !============================================================================
@@ -281,7 +282,7 @@ contains
     real,    intent(in), optional            :: bounds(2), sk_mean
     logical, intent(in), optional            :: anisotropic_search, weight_correction, &
                                                 use_old_weight, write_mat, store_weight, &
-                                                verbose, cross_validation, neglect_error
+                                                verbose, cross_validation, neglect_error, varying_vgm
     character(len=*), intent(in), optional   :: weight_file
     character(len=*), parameter              :: subname = "t_kriging%initialize"
 
@@ -579,9 +580,8 @@ contains
     character(len=*), parameter :: subname = "t_kriging%set_vgm"
     if (.not. associated(self%block)) &
       call kriging_error(subname, 'Call initialize() before set_vgm.')
-    if (self%block%n == 0) &
-      call kriging_error(subname, 'Grid needs to be set before adding variogram.')
-
+    if (self%varying_vgm .and. self%block%n==0) &
+        call kriging_error(subname, 'Grid needs to be set before adding variogram under varying_vgm mode.')
     vtype_    = 'sph'    ; if (present(vtype   )) vtype_ = 'sph'
     nugget_   = 0.0      ; if (present(nugget  )) nugget_ = nugget
     sill_     = 1.0      ; if (present(sill    )) sill_ = sill
@@ -597,7 +597,12 @@ contains
       mb = ib
     else
       ib0 = 1
-      mb= size(self%vgm, 3)
+      ! -- If block index is not present, the structure is applied to all blocks
+      if (self%varying_vgm) then
+        mb = self%block%n
+      else
+        mb = 1
+      end if
     end if
 
     do ib_ = ib0, mb
@@ -823,9 +828,15 @@ contains
     class(t_kriging)   :: self
     integer, intent(in) :: ivar
     real,    intent(in) :: anis1, anis2, azimuth, dip, plunge
+    character(len=*), parameter :: subname = "t_kriging%set_search"
 
     real, allocatable :: rcoord(:,:)   ! rotated coordinates for anisotropic tree
-
+    if (self%obs(ivar)%n == 0) &
+      call kriging_error(subname, 'set_obs() needs to be called before set_search().')
+    if (ivar == 1 .and. self%nsim > 0) then
+      if (self%block%n == 0) call kriging_error(subname, 'set_grid() needs to be called before set_search().')
+      if (size(self%obs(ivar)%coord, 2) == self%obs(ivar)%n) call kriging_error(subname, 'set_sim() needs to be called before set_search().')
+    end if
     associate( &
       ndim               => self%ndim, &
       obs                => self%obs(ivar), &
@@ -862,6 +873,7 @@ contains
         end if
       end if
     end associate
+    self%obs(ivar)%set_search = .true.
   end subroutine set_search
 
 
@@ -940,8 +952,10 @@ contains
     end if
 
     call self%validate_vgm()
-    if (self%nsim > 0 .and. size(self%obs(1)%coord, 2) == self%obs(1)%n) &
-      call kriging_error(subname, 'set_sim() needs to be called before solve().')
+    do ivar = 1, self%nvar
+      if (.not. self%obs(ivar)%set_search) &
+        call kriging_error(subname, 'set_search() needs to be called before solve().')
+    end do
 
     associate(npp => self%nppmax, matsize => self%matsize_max, ifile => self%ifile)
 

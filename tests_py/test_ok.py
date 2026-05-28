@@ -19,12 +19,12 @@ print("2. set_obs...")
 k.set_obs(ivar=1, coord=obs_coord, value=obs_value, nmax=62)
 print("   OK")
 
-print("3. set_vgm...")
-k.set_vgm(ivar=1, jvar=1, vtype="sph", sill=0.12, a_major=5000.0)
+print("3. set_grid...")
+k.set_grid(coord=grid_coord)
 print("   OK")
 
-print("4. set_grid...")
-k.set_grid(coord=grid_coord)
+print("4. set_vgm...")
+k.set_vgm(ivar=1, jvar=1, vtype="sph", sill=0.12, a_major=5000.0)
 print("   OK")
 
 print("5. set_search...")

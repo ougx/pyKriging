@@ -146,6 +146,7 @@ _krige_set_grid_block = _cfun("krige_set_grid_block", [
     _c_int, _c_int, _ptr_dbl,                   # ngrid, ndim_c, coord
     _c_int, _ptr_int,                            # nblock, nblockpnt
     _ptr_dbl,                                    # pointweight[sum(nblockpnt)] — no npw
+    _ptr_dbl,                                    # blocksize
     _ptr_dbl, _ptr_dbl,                          # rangescale, localnugget
 ])
 _krige_set_grid_cv = _cfun("krige_set_grid_cv", [ctypes.c_int64])
@@ -422,6 +423,23 @@ class Kriging:
         self.sk_mean = sk_mean
         self.seed = seed
 
+        #-- Sanity checks: mutually exclusive flag combinations
+        if (self.use_old_weight and self.weight_file == b""):
+            raise ValueError('use_old_weight requires weight_file to be specified')
+        if (self.store_weight and self.weight_file == b""):
+            raise ValueError('store_weight requires weight_file to be specified')
+        if (self.store_weight and self.use_old_weight):
+            raise ValueError('store_weight and use_old_weight are mutually exclusive')
+        if (self.cross_validation and self.nsim > 0):
+            raise ValueError('nsim>0 and cross_validation are mutually exclusive')
+
+        # -- size tracking
+        self._nblock = 0
+        self._nobs = np.zeros(self.nvar, dtype=int, dtype=np.uint32)
+        self._set_search = [False,] * self.nvar
+        self._set_sim    = False
+        self._nobsdrift = np.zeros(self.nvar, dtype=int, dtype=np.uint32)
+        self._nvgm_struct = np.zeros([self.nvar, self.nvar], dtype=np.uint32) # does not fully track nvgm_struct with varying vgm mode
     # ------------------------------------------------------------------
     def set_obs(
         self,
@@ -478,6 +496,7 @@ class Kriging:
             _dptr(coord_f), _dptr(value_f), _dptr(var_f),
             c_nmax, c_maxdist,
         )
+        self._nobs[ivar-1] = nobs
 
     # ------------------------------------------------------------------
     def set_obs_drift(self, ivar: int, drift: np.ndarray):
@@ -495,14 +514,13 @@ class Kriging:
             Drift values. Rows are observations, columns are drift functions.
             Transposed to (ndrift, nobs) internally before calling Fortran.
         """
-        if self.ndrift == 0:
-            raise ValueError("ndrift must be > 0 when setting drift values.")
+        assert self.ndrift > 0, ("ndrift must be > 0 when setting drift values.")
+        assert self._nobs[ivar-1] > 0, ("set_obs must be called before set_obs_drift.")
         drift_f  = _drift_to_fortran(drift)   # (nobs, ndrift) -> (ndrift, nobs)
         ndrift_c = drift_f.shape[0]
         nobs     = drift_f.shape[1]
-        assert ndrift_c == self.ndrift, (
-            f"drift has {ndrift_c} column(s) but ndrift={self.ndrift} was declared. "
-            "drift must be shape (nobs, ndrift)."
+        assert ndrift_c == self.ndrift and nobs==self._nobs[ivar-1], (
+            f"drift has shape ({nobs}, {ndrift_c}) not matching the observation shape ({self._nobs[ivar-1]}, {self.ndrift})."
         )
         _krige_set_obs_drift(_h(self._handle),
             _c_int(ivar), _c_int(ndrift_c), _c_int(nobs),
@@ -551,6 +569,10 @@ class Kriging:
         >>> k.set_vgm(1, 1, vtype="nug", nugget=0.1, sill=0.0, a_major=1.0)
         >>> k.set_vgm(1, 1, vtype="sph", nugget=0.0, sill=0.9, a_major=500.0)
         """
+        if self.varying_vgm:
+            assert self._nblock>0, (
+                'Grid needs to be set before adding variogram under varying_vgm mode.'
+            )
         if a_minor1 is None:
             a_minor1 = a_major
         if a_minor2 is None:
@@ -561,6 +583,9 @@ class Kriging:
             nugget, sill, a_major, a_minor1, a_minor2,
             azimuth, dip, plunge,
         )
+        self._nvgm_struct[ivar-1, jvar-1] += 1
+        if (ivar!=jvar):
+            self._nvgm_struct[jvar-1, ivar-1] += 1
 
     # ------------------------------------------------------------------
     def set_vgm_block(
@@ -602,6 +627,10 @@ class Kriging:
         azimuth, dip, plunge : float
             Rotation angles in degrees (default 0).
         """
+        assert self.varying_vgm, "set_vgm_block requires varying_vgm=True"
+        assert self._nblock>0, (
+            'Grid needs to be set before adding variogram under varying_vgm mode.'
+        )
         if a_minor1 is None:
             a_minor1 = a_major
         if a_minor2 is None:
@@ -639,10 +668,12 @@ class Kriging:
             Additional nugget added per block to model local uncertainty.
             Default: 0.0 for all blocks.
         """
+        assert self._nobs[0]>0, 'Observation needs to be set first.'
         if coord is None:
             assert self.cross_validation, (
               "coord must be speicifed except for corss validation.")
-            coord = np.zeros([1, self.ndim])
+            self.set_grid_cv()
+            return
 
         assert coord.shape[1] == self.ndim, (
             f"coord should be (ngrid, ndim={self.ndim}), got {coord.shape}. "
@@ -661,6 +692,7 @@ class Kriging:
             _c_int(ngrid), _c_int(ndim_c), _dptr(coord_f),
             _dptr(rs_f), _dptr(ln_f),
         )
+        self._nblock = ngrid
 
     # ------------------------------------------------------------------
     def set_grid_block(
@@ -669,6 +701,7 @@ class Kriging:
         block_type: int,
         nblockpnt: np.ndarray,
         pointweight: Optional[np.ndarray] = None,
+        blocksize: Optional[np.ndarray] = None,
         rangescale: Optional[np.ndarray] = None,
         localnugget: Optional[np.ndarray] = None,
     ):
@@ -688,38 +721,63 @@ class Kriging:
             Number of sub-nodes per block.
         pointweight : ndarray, shape (sum(nblockpnt),), optional
             Weight of each sub-node. Uniform weights (1/nblockpnt) used if omitted.
+        blocksize : ndarray, shape (nblock,ndim), optional
+            Block size in each dimension when block_type == -4.
         rangescale : ndarray, shape (nblock,), optional
             Per-block variogram range scaling. Default: 1.0.
         localnugget : ndarray, shape (nblock,), optional
             Per-block additional nugget. Default: 0.0.
         """
+        assert self._nobs[0]>0, 'Observation needs to be set first.'
         assert coord.shape[1] == self.ndim, (
             f"coord should be (ngrid, ndim={self.ndim}), got {coord.shape}.")
 
         coord_f = _coord_to_fortran(coord)
         ngrid   = coord_f.shape[1]
         ndim_c  = coord_f.shape[0]
-        nbp_f   = np.ascontiguousarray(nblockpnt, dtype=np.int32)
-        nblock  = len(nbp_f)
 
-        if pointweight is not None:
-            pw_f = _farray(pointweight)
+        if block_type == -4:
+            nblock = ngrid
+            assert blocksize is not None, (
+                "blocksize must be specified for Gaussian quadrature blocks.")
+            if blocksize.ndim == 1:
+                # broadcasts the 1-D blocksize vector into a (ndim, nblock) matrix
+                blocksize = np.tile(blocksize, (nblock, 1))
+            else:
+                assert len(blocksize) == nblock and len(blocksize[0]) == self.ndim, (
+                    f"blocksize should be (nblock={nblock}, ndim={self.ndim})")
+            blocksize_f = _coord_to_fortran(blocksize)
+            nbp_f   = np.ascontiguousarray(np.ones(nblock, dtype=np.int32))
+            pw_f = _farray(np.ones(nblock))
         else:
-            # uniform weights: 1/nblockpnt for each sub-node
-            pw_f = _farray(np.repeat(1.0 / nbp_f, nbp_f))
-
+            nbp_f   = np.ascontiguousarray(nblockpnt, dtype=np.int32)
+            nblock  = len(nblockpnt)
+            blocksize_f = _coord_to_fortran(np.zeros((nblock, self.ndim)))
+            if pointweight is not None:
+                assert len(pointweight) == sum(nblockpnt), (
+                    f"pointweight should be (sum(nblockpnt)={sum(nblockpnt)})")
+                pw_f = _farray(pointweight)
+            else:
+                # uniform weights: 1/nblockpnt for each sub-node
+                pw_f = _farray(np.repeat(1.0 / nbp_f, nbp_f))
         rs_f = (_farray(rangescale)
                 if rangescale  is not None else _farray(np.ones(nblock)))
         ln_f = (_farray(localnugget)
                 if localnugget is not None else _farray(np.zeros(nblock)))
+        assert len(rs_f) == nblock, (
+            f"rangescale should be (nblock={nblock})")
+        assert len(ln_f) == nblock, (
+            f"localnugget should be (nblock={nblock})")
 
         _krige_set_grid_block(_h(self._handle),
             _c_int(block_type),
             _c_int(ngrid), _c_int(ndim_c), _dptr(coord_f),
             _c_int(nblock), _iptr(nbp_f),
             _dptr(pw_f),                   # Fortran derives length via sum(nblockpnt)
+            _dptr(blocksize_f),            # blocksize_f is (nblock, ndim)
             _dptr(rs_f), _dptr(ln_f),
         )
+        self._nblock = nblock
 
     # ------------------------------------------------------------------
     def set_grid_cv(self):
@@ -730,7 +788,9 @@ class Kriging:
         observation coordinates automatically.  Call instead of :meth:`set_grid`
         when ``cross_validation=True`` was passed to the constructor.
         """
+        assert self.cross_validation, ("set_grid_cv requires cross_validation=True")
         _krige_set_grid_cv(_h(self._handle))
+        self._nblock = self._nobs[0]
 
     # ------------------------------------------------------------------
     def set_grid_drift(self, drift: np.ndarray):
@@ -748,11 +808,14 @@ class Kriging:
             sub-nodes), even for block kriging.
             Transposed to (ndrift, nblocks) internally before calling Fortran.
         """
-        if self.ndrift == 0:
-            raise ValueError("ndrift must be > 0 when setting drift values.")
+        assert self.ndrift > 0, ("ndrift must be > 0 when setting drift values.")
+        assert self._nblock > 0, ("set_grid must be called before set_grid_drift.")
         drift_f  = _drift_to_fortran(drift)   # (nblocks, ndrift) -> (ndrift, nblocks)
         ndrift_c = drift_f.shape[0]
         nblocks  = drift_f.shape[1]
+        assert ndrift_c == self.ndrift and nblocks==self._nblock, (
+            f"drift has shape ({nblocks}, {ndrift_c}) not matching the grid shape ({self._nblock}, {self.ndrift})."
+        )
         _krige_set_grid_drift(_h(self._handle),
             _c_int(ndrift_c), _c_int(nblocks),
             _dptr(drift_f),
@@ -781,6 +844,9 @@ class Kriging:
         """
         # Python generates defaults so Fortran always receives concrete arrays.
         # We need the block count; retrieve it from the Fortran object.
+        assert self.nsim > 0, ("nsim must be > 0 when setting SGSIM parameters.")
+        assert self._nblock > 0, ("set_grid must be called before set_sim.")
+        assert self._nobs[0] > 0, ("set_obs must be called for the first variable before set_sim.")
         nb = _c_int(0)
         _krige_get_nblocks(_h(self._handle), ctypes.byref(nb))
         nblocks = nb.value
@@ -805,6 +871,7 @@ class Kriging:
             _c_int(nblocks), _iptr(rp_f),         # nblocks covers both randpath and sample
             _c_int(nsim_c), _dptr(s_f),
         )
+        self._set_sim = True
 
     # ------------------------------------------------------------------
     def set_search(
@@ -835,11 +902,16 @@ class Kriging:
         plunge : float
             Plunge angle (degrees).
         """
+        assert self._nblock > 0, ("set_grid must be called before set_search.")
+        assert self._nobs[0] > 0, ("set_obs must be called for the first variable before set_search.")
+        if (self.nsim > 0):
+            assert self._set_sim, ("set_sim must be called before set_search.")
         _krige_set_search(_h(self._handle),
             _c_int(ivar),
             _c_double(anis1), _c_double(anis2),
             _c_double(azimuth), _c_double(dip), _c_double(plunge),
         )
+        self._set_search[ivar-1] = True
 
     # ------------------------------------------------------------------
     def solve(self):
@@ -849,6 +921,7 @@ class Kriging:
         """
         if self.verbose:
             get_omp_info()
+        assert all(self._set_search), ("set_search must be called for every variable before solve.")
         _krige_solve(_h(self._handle))
 
     # ------------------------------------------------------------------
