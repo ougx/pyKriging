@@ -1,4 +1,5 @@
 module gaussian_quadrature
+implicit none
 real, parameter :: frac(4)=[0.4305681558,0.1699905218,-0.1699905218,-0.4305681558] ! see Palmer, 1993
 real, parameter :: wgq4(4)=[0.1739274226,0.3260725774, 0.3260725774, 0.1739274226] ! see Palmer, 1993
 
@@ -7,11 +8,13 @@ real, allocatable            :: gqdelxyz(:,:)
 integer                      :: ngq
 contains
 subroutine set_gaussian_quadrature(ndim, blocksize)
-  integer :: ndim
-  real    :: blocksize(ndim)
+  integer, intent(in) :: ndim
+  real,    intent(in) :: blocksize(ndim)
   integer :: i, j, k, ii(3, 64)
 
   ngq = 4**ndim
+  if (allocated(gqweight)) deallocate(gqweight)
+  if (allocated(gqdelxyz)) deallocate(gqdelxyz)
   allocate(gqweight(ngq), gqdelxyz(ndim, ngq))
 
   do k=1, 4

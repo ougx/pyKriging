@@ -182,6 +182,35 @@ class TestBlockKriging:
             "Block kriging of constant field should return the constant "
             "(unbiasedness / weights sum to 1)")
 
+    def test_gaussian_quadrature_block_matches_explicit_nodes(self, block_data):
+        """block_type=-4 should generate the same 4x4 nodes/weights as the fixture."""
+        d = block_data
+
+        def _solve_with_grid_block(coord, block_type, **kwargs):
+            k = Kriging(ndim=2, nvar=1, verbose=0)
+            k.set_obs(ivar=1, coord=d["coord"], value=d["value"], nmax=_NMAX)
+            k.set_vgm(ivar=1, jvar=1, **_VGM)
+            k.set_grid_block(coord=coord, block_type=block_type, **kwargs)
+            k.set_search(ivar=1)
+            k.solve()
+            return k.get_results()
+
+        est_explicit, var_explicit = _solve_with_grid_block(
+            d["sub_coords"],
+            block_type=1,
+            nblockpnt=d["nblockpnt"],
+            pointweight=d["sub_weights"],
+        )
+        est_gq, var_gq = _solve_with_grid_block(
+            d["block_centroid"],
+            block_type=-4,
+            nblockpnt=np.array([1], dtype=np.int32),  # ignored by Fortran for -4
+            blocksize=np.array([2000.0, 2000.0]),
+        )
+
+        np.testing.assert_allclose(est_gq, est_explicit, rtol=1e-5, atol=1e-5)
+        np.testing.assert_allclose(var_gq, var_explicit, rtol=1e-5, atol=1e-5)
+
     def test_block_kriging_localnugget(self, block_data):
         """localnugget can be set per block; positive value increases block variance."""
         d = block_data

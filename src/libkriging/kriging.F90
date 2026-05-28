@@ -382,7 +382,7 @@ contains
     real,    intent(in), optional          :: rangescale(:)   ! variogram range scaler       [nblocks]
     real,    intent(in), optional          :: localnugget(:)  ! per-block extra nugget       [nblocks]
 
-    integer :: ngrid, nn, nb, iblock, igrid, idim
+    integer :: ngrid, nn, nb, iblock, igrid, idim, igq
     character(len=*), parameter :: subname = "t_kriging%set_grid"
 
 
@@ -446,17 +446,32 @@ contains
             call kriging_error(subname, 'blocksize needs to be provided when block_type=-4.')
             return
           end if
+          if (size(blocksize, 1) /= ndim) then
+            call kriging_error(subname, 'size(blocksize, 1) /= ndim when block_type=-4.')
+            return
+          end if
+          if (size(blocksize, 2) /= ngrid) then
+            call kriging_error(subname, 'size(blocksize, 2) /= nblock when block_type=-4.')
+            return
+          end if
           nb = 4**ndim        ! integration points per block (4-point Gauss per dimension)
           self%block%n = ngrid
+          self%grid%n  = ngrid * nb
           allocate(self%block%coord, source = coord)
-          allocate(self%grid%coord(ndim, ngrid * nb))
+          allocate(self%grid%coord(ndim, self%grid%n))
           allocate(self%block%nblockpnt(ngrid));   self%block%nblockpnt = nb
           allocate(self%block%iblockpnt, source = [((igrid-1)*nb+1, igrid = 1, ngrid)])
-          allocate(self%grid%weight(nb * ngrid))
+          allocate(self%grid%weight(self%grid%n))
           igrid = 0
           do iblock = 1, self%block%n
-            !-- TODO: replace equal weights with true Gaussian quadrature weights
-            self%grid%weight(igrid+1:igrid+nb) = 1.0 / nb
+            !-- Generate 4-point Gaussian quadrature nodes for this block.
+            !   coord(:,iblock) is the block centre; gqdelxyz holds offsets
+            !   from that centre, already scaled by blocksize(:,iblock).
+            call set_gaussian_quadrature(ndim, blocksize(:, iblock))
+            do igq = 1, nb
+              self%grid%coord(:, igrid + igq) = coord(:, iblock) + gqdelxyz(:, igq)
+            end do
+            self%grid%weight(igrid+1:igrid+nb) = gqweight
             igrid = igrid + nb
           end do
 
