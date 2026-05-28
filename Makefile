@@ -200,7 +200,7 @@ SPK_OBJS := $(call _src2obj,$(SPK_BDIR),$(SPK_SRCS))
 # ---------------------------------------------------------------------------
 # .def file — Windows Intel only; lists every C-API export symbol
 # ---------------------------------------------------------------------------
-DEF_FILE  := src/pykriging/kriging.def
+DEF_FILE  :=
 _DEF_SYMS := \
   krige_create krige_destroy krige_initialize \
   krige_set_obs krige_set_obs_drift krige_set_vgm krige_set_vgm_block krige_to_str \
@@ -219,6 +219,15 @@ _DEF_SYMS := \
   krige_st_get_estimate krige_st_get_variance
 
 # ---------------------------------------------------------------------------
+# Windows Intel: .def file is a prerequisite of the DLL
+# ---------------------------------------------------------------------------
+ifeq ($(WINDOWS),1)
+  ifneq ($(filter $(FC),ifx ifort),)
+    DEF_FILE  := src/pykriging/kriging.def
+  endif
+endif
+
+# ---------------------------------------------------------------------------
 # Top-level targets
 # ---------------------------------------------------------------------------
 .PHONY: all libkriging sparks clean info
@@ -235,7 +244,7 @@ sparks: $(EXE_FILE)
 # Per-file compilation ensures .mod files are complete before dependent files
 # read them — avoiding the "Unexpected EOF" stale-mod problem with gfortran.
 # ---------------------------------------------------------------------------
-$(DLL_FILE): $(LIB_OBJS)
+$(DLL_FILE): $(DEF_FILE) $(LIB_OBJS)
 ifeq ($(WINDOWS),1)
 ifneq ($(filter $(FC),ifx ifort),)
 	$(FC) $(FFLAGS) $(LIB_SHARED) $(LIB_OBJS) -o $@ $(DLL_EXTRA)
@@ -301,15 +310,6 @@ $(DEF_FILE):
 	python -c "\
 syms = '$(_DEF_SYMS)'.split(); \
 open('$@', 'w').write('EXPORTS\n' + ''.join('    ' + s + '\n' for s in syms))"
-
-# ---------------------------------------------------------------------------
-# Windows Intel: .def file is a prerequisite of the DLL
-# ---------------------------------------------------------------------------
-ifeq ($(WINDOWS),1)
-ifneq ($(filter $(FC),ifx ifort),)
-$(DLL_FILE): $(DEF_FILE)
-endif
-endif
 
 # ---------------------------------------------------------------------------
 # clean
