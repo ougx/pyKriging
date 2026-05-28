@@ -633,7 +633,7 @@ contains
       call kriging_error(subname, 'Variogram storage is not allocated. Call initialize() first.')
       return
     end if
-    vtype_    = 'sph'    ; if (present(vtype   )) vtype_ = 'sph'
+    vtype_    = 'sph'    ; if (present(vtype   )) vtype_ = vtype
     nugget_   = 0.0      ; if (present(nugget  )) nugget_ = nugget
     sill_     = 1.0      ; if (present(sill    )) sill_ = sill
     a_major_  = 1.0      ; if (present(a_major )) a_major_ = a_major
@@ -1167,6 +1167,14 @@ contains
       !$OMP END DO
       deallocate(ctx)     ! explicit per-thread cleanup; avoids crash on runtime auto-finalization of PRIVATE allocatables
       !$OMP END PARALLEL
+
+      ! Factor files are opened in prepare() and written/read inside the block
+      ! loop.  Close them here so Windows flushes buffered writes before Python
+      ! reopens the file in a later Kriging object.
+      if (self%store_weight .or. self%use_old_weight) then
+        close(self%ifile)
+        self%ifile = 0
+      end if
 
       if (kriging_failed()) return
 
