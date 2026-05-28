@@ -1,7 +1,7 @@
 # ===========================================================================
 # Makefile — pyKriging
 # Builds:  libkriging  (shared library → src/pykriging/kriging.dll / .so)
-#          sparks       (CLI executable → src/sparks/sparks[.exe])
+#          sparks       (CLI executable → bin/sparks[.exe])
 #
 # Requires GNU Make >= 4 (rtools44, msys2, or brew).
 # Run from the project root directory.
@@ -22,20 +22,30 @@
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
-# Platform — detect Windows via COMSPEC (always set, even in Git Bash/MSYS2)
-# or via OS (set in cmd / PowerShell).
+# Platform — detect Windows and properly configure the SHELL
 # ---------------------------------------------------------------------------
 ifdef COMSPEC
   WINDOWS := 1
+  # If we are in pure CMD/PowerShell (no MSYSTEM), force Make to use cmd.exe
+  # This prevents the "sh: Command not found" crash during $(shell ...) functions.
+  ifndef MSYSTEM
+    SHELL := cmd.exe
+    .SHELLFLAGS := /C
+  endif
 else ifeq ($(OS),Windows_NT)
   WINDOWS := 1
+  ifndef MSYSTEM
+    SHELL := cmd.exe
+    .SHELLFLAGS := /C
+  endif
 endif
 
 ifeq ($(WINDOWS),1)
   DLL_FILE  := src/pykriging/kriging.dll
-  EXE_FILE  := bin/sparks
+  EXE_FILE  := bin/sparks.exe
   OBJEXT    := obj
-  MKDIR     := mkdir -p # depending if you have cygwin or msys
+  # mkdir -p fails in pure CMD. Since Python is required for this library, we use it safely.
+  MKDIR     := python -c "import os, sys; [os.makedirs(d, exist_ok=True) for d in sys.argv[1:]]"
 else
   DLL_FILE  := src/pykriging/libkriging.so
   EXE_FILE  := bin/sparks
@@ -46,31 +56,37 @@ endif
 # Default goal must come before the first target rule.
 .DEFAULT_GOAL := all
 
+# Fortran modules make parallel compilation fragile unless every .mod
+# dependency is modeled explicitly.  Keep this Makefile serial so a normal
+# `make` works reliably on Windows with GNU Make and gfortran from %PATH%.
+.NOTPARALLEL:
+
 # ---------------------------------------------------------------------------
-# Compiler — auto-detect when the user has not set FC
-# (GNU Make's built-in default is 'f77' so we check $(origin FC))
+# Compiler — auto-detect unless the user passed FC=... on the make command line.
+# Some Windows developer shells set environment variables such as FC=Microsoft;
+# ignore those so plain `make` still finds gfortran from PATH.
 # ---------------------------------------------------------------------------
-ifeq ($(filter command_line environment,$(origin FC)),)
-  # Better Auto-detection: If we are on Windows, check if the shell is Bash or CMD
+ifneq ($(origin FC),command line)
   ifeq ($(WINDOWS),1)
       ifneq ($(findstring sh,$(SHELL)),)
-          # Git Bash / MSYS2: Find the path, then use 'cygpath -d' to force a 100% space-free short path
-          FIND_FC_CMD = (which ifx || which gfortran || which ifort) 2>/dev/null | xargs -I {} cygpath -d "{}" 2>/dev/null
+          # Unix-like shell on Windows (Git Bash, MSYS2, MinGW bash)
+          FIND_FC_CMD = which gfortran 2>/dev/null || which ifx 2>/dev/null || which ifort 2>/dev/null
       else
-          # Windows CMD: 'where' syntax
-          FIND_FC_CMD = where ifx gfortran ifort 2>nul
+          # Pure Windows CMD
+          FIND_FC_CMD = where gfortran 2>nul || where ifx 2>nul || where ifort 2>nul
       endif
   else
       # Linux / macOS
-      FIND_FC_CMD = which ifx 2>/dev/null || which gfortran 2>/dev/null || which ifort 2>/dev/null
+      FIND_FC_CMD = which gfortran 2>/dev/null || which ifx 2>/dev/null || which ifort 2>/dev/null
   endif
 
-  # Using 'subst' handles any leftover escaped characters cleanly
+  # Capture the first valid path found and strip it down to just the executable name
   _FC_FOUND := $(subst \,/,$(firstword $(shell $(FIND_FC_CMD))))
   FC := $(notdir $(basename $(_FC_FOUND)))
 #   $(info [DEBUG] Current FIND_FC_CMD is: $(FIND_FC_CMD))
 #   $(info [DEBUG] Discovered compiler path: $(_FC_FOUND))
 endif
+
 ifeq ($(FC),)
   $(error No Fortran compiler found. Set FC=gfortran, FC=ifx, or FC=ifort)
 endif
@@ -83,20 +99,41 @@ OPT ?= release
 OPENMP ?= 1
 
 # ---------------------------------------------------------------------------
-# Object-file directories (per-target to keep libkriging and sparks separate)
-# Must be defined before the compiler-flags block so that LIB_MODF / SPK_MODF
-# can reference them with := (immediate expansion).
+# Object-file directories
 # ---------------------------------------------------------------------------
 LIB_BDIR := build/libkriging
 SPK_BDIR := build/sparks
 
 # ---------------------------------------------------------------------------
+# Windows: .def file lists every C-API export symbol
+# ---------------------------------------------------------------------------
+DEF_FILE  :=
+_DEF_SYMS := \
+  krige_create krige_destroy krige_initialize \
+  krige_set_obs krige_set_obs_drift krige_set_vgm krige_set_vgm_block krige_to_str \
+  krige_set_grid krige_set_grid_block krige_set_grid_cv krige_set_grid_drift \
+  krige_set_sim krige_set_search krige_prepare \
+  krige_get_max_threads krige_get_num_threads \
+  krige_solve krige_get_nblocks krige_get_nsim \
+  krige_get_estimate krige_get_variance \
+  krige_st_create krige_st_destroy krige_st_initialize \
+  krige_st_set_st_model \
+  krige_st_set_obs krige_st_set_obs_drift krige_st_set_vgm \
+  krige_st_set_vgm_temporal krige_st_set_vgm_joint_sills \
+  krige_st_set_grid krige_st_set_grid_block krige_st_set_grid_cv \
+  krige_st_set_grid_drift krige_st_set_sim krige_st_set_search \
+  krige_st_solve krige_st_get_nblocks krige_st_get_nsim \
+  krige_st_get_estimate krige_st_get_variance
+
+ifeq ($(WINDOWS),1)
+  DEF_FILE := src/pykriging/kriging.def
+endif
+
+# ---------------------------------------------------------------------------
 # Compiler flags
 # ---------------------------------------------------------------------------
-# 1. Initialize the variable as empty first
 OMP_FLAGS :=
 
-# 2. Conditionals MUST start on their own fresh lines
 ifeq ($(OPENMP),1)
     ifeq ($(FC),gfortran)
         OMP_FLAGS := -fopenmp
@@ -114,29 +151,23 @@ ifeq ($(FC),gfortran)
   FFLAGS_release := -O2 $(FFLAGS)
   FFLAGS_debug   := -O0 -g -Wall -fcheck=all $(FFLAGS) -DDEBUG
   LIB_SHARED     := -shared -fPIC
-  # -J <dir>: write .mod files; -I <dir>: search for .mod files
   LIB_MODF       := -J $(LIB_BDIR) -I $(LIB_BDIR)
   SPK_MODF       := -J $(SPK_BDIR) -I $(SPK_BDIR)
-  DLL_EXTRA      :=
+
+  ifeq ($(WINDOWS),1)
+    DLL_EXTRA := $(DEF_FILE) -static -static-libgcc -static-libgfortran
+  else
+    DLL_EXTRA :=
+  endif
 
 else ifneq ($(filter $(FC),ifx ifort),)
   ifeq ($(WINDOWS),1)
-    # MSYS2/Git Bash auto-converts arguments starting with '/' to Windows paths
-    # (e.g. /O2 → C:/Users/hydro/O2).  Setting these env vars disables that so
-    # Intel's /flag-style options reach ifx/ifort unchanged.
     export MSYS2_ARG_CONV_EXCL := *
     export MSYS_NO_PATHCONV    := 1
     FFLAGS         := /real-size:64 /traceback /fpp /nologo $(OMP_FLAGS) /heap-arrays:10
     FFLAGS_release := /O2 $(FFLAGS)
     FFLAGS_debug   := /Od /debug:full /warn:all /check:all $(FFLAGS) /DDEBUG
-    # /libs:static — embed Intel Fortran core runtime into the DLL so that
-    # ifcore.dll / libcaf_ifx.dll are NOT required at runtime.  Without this,
-    # the Intel runtime tries to dynamically load libcaf_ifx.dll (the Coarray
-    # runtime) on the first Fortran call, which fails when the Intel oneAPI
-    # directory is not on the Python process PATH (error 493).
-    # libiomp5md.dll (OpenMP) is still linked dynamically and must be on PATH.
     LIB_SHARED     := /dll /libs:static
-    # /module:<dir>: write .mod;  /I<dir>: search (no space before path)
     LIB_MODF       := /module:$(LIB_BDIR) /I$(LIB_BDIR)
     SPK_MODF       := /module:$(SPK_BDIR) /I$(SPK_BDIR)
     DLL_EXTRA      := -link /def:src/pykriging/kriging.def
@@ -157,10 +188,8 @@ endif
 FFLAGS := $(FFLAGS_$(OPT))
 
 # ---------------------------------------------------------------------------
-# Source lists — in USE-before-USE dependency order
+# Source lists
 # ---------------------------------------------------------------------------
-
-# Core modules shared by both libkriging and sparks
 _CORE_SRCS := \
   src/libkriging/common.f90          \
   src/libkriging/kriging_err.f90     \
@@ -174,15 +203,13 @@ _CORE_SRCS := \
   src/libkriging/solver.f90          \
   src/libkriging/kriging.F90
 
-# libkriging adds variogram_st and both C-API layers on top of core
 LIB_SRCS := \
   $(_CORE_SRCS) \
   src/libkriging/variogram_st.f90    \
-  src/libkriging/kriging_capi.f90    \
+  src/libkriging/kriging_capi.F90    \
   src/libkriging/kriging_st.F90      \
   src/libkriging/kriging_st_capi.f90
 
-# sparks adds its own three sources on top of core
 SPK_SRCS := \
   $(_CORE_SRCS) \
   src/sparks/f90getopt.F90           \
@@ -190,33 +217,12 @@ SPK_SRCS := \
   src/sparks/sparks.f90
 
 # ---------------------------------------------------------------------------
-# Object-file lists — flat in each build dir (basename only, no subdir)
+# Object-file lists
 # ---------------------------------------------------------------------------
 _src2obj = $(addprefix $(1)/,$(addsuffix .$(OBJEXT),$(notdir $(basename $(2)))))
 
 LIB_OBJS := $(call _src2obj,$(LIB_BDIR),$(LIB_SRCS))
 SPK_OBJS := $(call _src2obj,$(SPK_BDIR),$(SPK_SRCS))
-
-# ---------------------------------------------------------------------------
-# .def file — Windows Intel only; lists every C-API export symbol
-# ---------------------------------------------------------------------------
-DEF_FILE  := src/pykriging/kriging.def
-_DEF_SYMS := \
-  krige_create krige_destroy krige_initialize \
-  krige_set_obs krige_set_obs_drift krige_set_vgm krige_set_vgm_block krige_to_str \
-  krige_set_grid krige_set_grid_block krige_set_grid_cv krige_set_grid_drift \
-  krige_set_sim krige_set_search krige_prepare \
-  krige_get_max_threads krige_get_num_threads \
-  krige_solve krige_get_nblocks krige_get_nsim \
-  krige_get_estimate krige_get_variance \
-  krige_st_create krige_st_destroy krige_st_initialize \
-  krige_st_set_st_model \
-  krige_st_set_obs krige_st_set_obs_drift krige_st_set_vgm \
-  krige_st_set_vgm_temporal krige_st_set_vgm_joint_sills \
-  krige_st_set_grid krige_st_set_grid_block krige_st_set_grid_cv \
-  krige_st_set_grid_drift krige_st_set_sim krige_st_set_search \
-  krige_st_solve krige_st_get_nblocks krige_st_get_nsim \
-  krige_st_get_estimate krige_st_get_variance
 
 # ---------------------------------------------------------------------------
 # Top-level targets
@@ -231,26 +237,14 @@ sparks: $(EXE_FILE)
 
 # ---------------------------------------------------------------------------
 # libkriging shared library
-# Compile each source to its own object file, then link.
-# Per-file compilation ensures .mod files are complete before dependent files
-# read them — avoiding the "Unexpected EOF" stale-mod problem with gfortran.
 # ---------------------------------------------------------------------------
-$(DLL_FILE): $(LIB_OBJS)
-ifeq ($(WINDOWS),1)
-ifneq ($(filter $(FC),ifx ifort),)
+$(DLL_FILE): $(DEF_FILE) $(LIB_OBJS)
 	$(FC) $(FFLAGS) $(LIB_SHARED) $(LIB_OBJS) -o $@ $(DLL_EXTRA)
-else
-	$(FC) $(FFLAGS) $(LIB_SHARED) $(LIB_OBJS) -o $@
-endif
-else
-	$(FC) $(FFLAGS) $(LIB_SHARED) $(LIB_OBJS) -o $@
-endif
 	@echo ""
 	@echo "Built: $@"
 	@echo ""
 	@echo ""
 
-# Pattern rules for object files — libkriging sources
 $(LIB_BDIR)/%.$(OBJEXT): src/libkriging/%.f90 | $(LIB_BDIR)
 	$(FC) $(FFLAGS) -c $< -o $@ $(LIB_MODF)
 
@@ -262,14 +256,12 @@ $(LIB_BDIR)/%.$(OBJEXT): src/libkriging/%.f | $(LIB_BDIR)
 
 # ---------------------------------------------------------------------------
 # sparks executable
-# Core sources are recompiled (standalone; writes mods to build/sparks/).
 # ---------------------------------------------------------------------------
-$(EXE_FILE): $(SPK_OBJS)
+$(EXE_FILE): $(SPK_OBJS) | bin
 	$(FC) $(FFLAGS) $(SPK_OBJS) -o $@
 	@echo ""
 	@echo "Built: $@"
 
-# Pattern rules for object files — libkriging core sources (for sparks)
 $(SPK_BDIR)/%.$(OBJEXT): src/libkriging/%.f90 | $(SPK_BDIR)
 	$(FC) $(FFLAGS) -c $< -o $@ $(SPK_MODF)
 
@@ -279,7 +271,6 @@ $(SPK_BDIR)/%.$(OBJEXT): src/libkriging/%.F90 | $(SPK_BDIR)
 $(SPK_BDIR)/%.$(OBJEXT): src/libkriging/%.f | $(SPK_BDIR)
 	$(FC) $(FFLAGS) -c $< -o $@ $(SPK_MODF)
 
-# Pattern rules for sparks-specific sources
 $(SPK_BDIR)/%.$(OBJEXT): src/sparks/%.f90 | $(SPK_BDIR)
 	$(FC) $(FFLAGS) -c $< -o $@ $(SPK_MODF)
 
@@ -289,35 +280,34 @@ $(SPK_BDIR)/%.$(OBJEXT): src/sparks/%.F90 | $(SPK_BDIR)
 # ---------------------------------------------------------------------------
 # Build directories (order-only prerequisites)
 # ---------------------------------------------------------------------------
-$(LIB_BDIR) $(SPK_BDIR):
+$(LIB_BDIR) $(SPK_BDIR) bin:
 	$(MKDIR) $@
-
-#python -c "import os; os.makedirs('$@', exist_ok=True)"
 
 # ---------------------------------------------------------------------------
 # .def file
 # ---------------------------------------------------------------------------
 $(DEF_FILE):
-	python -c "\
-syms = '$(_DEF_SYMS)'.split(); \
-open('$@', 'w').write('EXPORTS\n' + ''.join('    ' + s + '\n' for s in syms))"
+	python -c "syms = '$(_DEF_SYMS)'.split(); open(r'$@', 'w').write('EXPORTS\n' + ''.join('    ' + s + '\n' for s in syms))"
 
 # ---------------------------------------------------------------------------
-# Windows Intel: .def file is a prerequisite of the DLL
-# ---------------------------------------------------------------------------
-ifeq ($(WINDOWS),1)
-ifneq ($(filter $(FC),ifx ifort),)
-$(DLL_FILE): $(DEF_FILE)
-endif
-endif
-
-# ---------------------------------------------------------------------------
-# clean
+# clean (Uses standard CMD commands if run in pure Windows environment)
 # ---------------------------------------------------------------------------
 clean:
+ifeq ($(WINDOWS),1)
+ifneq ($(findstring cmd.exe,$(SHELL)),)
+	-del /Q /F $(subst /,\,$(DLL_FILE)) $(subst /,\,$(EXE_FILE)) $(subst /,\,$(DEF_FILE)) 2>nul
+	-rmdir /S /Q build 2>nul
+	-del /Q /F *.mod *.obj *.o 2>nul
+else
 	-rm -f $(DLL_FILE) $(EXE_FILE) $(DEF_FILE)
 	-rm -rf build
 	-rm -f *.mod *.obj *.o
+endif
+else
+	-rm -f $(DLL_FILE) $(EXE_FILE) $(DEF_FILE)
+	-rm -rf build
+	-rm -f *.mod *.obj *.o
+endif
 
 # ---------------------------------------------------------------------------
 # info — print build settings
