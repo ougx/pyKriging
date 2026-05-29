@@ -221,6 +221,99 @@ contains
   !   rhsB(i, 1:n) is a strided row, so we copy it into a local (n,q)
   !   column-major array for the LAPACK solve — one unavoidable copy.
   !-----------------------------------------------------------------------
+  subroutine kriging_setup(n, p, matA, L, kinv_drift, schur_factor, info)
+
+    implicit none
+
+    integer, intent(in)  :: n, p
+    real,    intent(in)  :: matA(:, :)
+    real,    intent(out) :: L(:, :)
+    real,    intent(out) :: kinv_drift(:, :)
+    real,    intent(out) :: schur_factor(:, :)
+    integer, intent(out) :: info
+
+    integer :: ldL, ldS
+
+    ldL = size(L, 1)
+    ldS = size(schur_factor, 1)
+
+    L(1:n, 1:n) = matA(1:n, 1:n)
+    call spotrf(uplo, n, L, ldL, info)
+    if (info /= 0) return
+
+    if (p == 0) return
+
+    kinv_drift(1:n, 1:p) = matA(1:n, n+1:n+p)
+    call spotrs(uplo, n, p, L, ldL, kinv_drift, size(kinv_drift, 1), info)
+    if (info /= 0) return
+
+    schur_factor(1:p, 1:p) = matmul(transpose(matA(1:n, n+1:n+p)), kinv_drift(1:n, 1:p))
+    call spotrf(uplo, p, schur_factor, ldS, info)
+  end subroutine kriging_setup
+
+
+  subroutine kriging_solve_prepared(n, p, q, L, kinv_drift, schur_factor, rhsB, x, info)
+
+    implicit none
+
+    integer, intent(in)  :: n, p, q
+    real,    intent(in)  :: L(:, :)
+    real,    intent(in)  :: kinv_drift(:, :)
+    real,    intent(in)  :: schur_factor(:, :)
+    real,    intent(in)  :: rhsB(:, :)
+    real,    intent(out) :: x(:, :)
+    integer, intent(out) :: info
+
+    real    :: kinv_rhs(n,q)
+    real    :: rhs_orig(n,q)
+    real    :: rhs_small(p,q)
+    integer :: i
+
+    do i = 1, q
+      rhs_orig(:, i) = rhsB(i, 1:n)
+      kinv_rhs(:, i) = rhs_orig(:, i)
+    end do
+
+    call spotrs(uplo, n, q, L, size(L, 1), kinv_rhs, n, info)
+    if (info /= 0) return
+
+    if (p == 0) then
+      do i = 1, q
+        x(i, 1:n) = kinv_rhs(:, i)
+      end do
+      return
+    end if
+
+    ! F^T K^{-1} k is equivalent to (K^{-1} F)^T k because K is symmetric.
+    rhs_small = matmul(transpose(kinv_drift(1:n, 1:p)), rhs_orig)
+    do i = 1, q
+      rhs_small(:, i) = rhs_small(:, i) - rhsB(i, n+1:n+p)
+    end do
+
+    call spotrs(uplo, p, q, schur_factor, size(schur_factor, 1), rhs_small, p, info)
+    if (info /= 0) return
+
+    do i = 1, q
+      x(i, 1:n)     = kinv_rhs(:, i) - matmul(kinv_drift(1:n, 1:p), rhs_small(:, i))
+      x(i, n+1:n+p) = rhs_small(:, i)
+    end do
+  end subroutine kriging_solve_prepared
+
+
+  !-----------------------------------------------------------------------
+  ! kriging_solve -- one-shot convenience wrapper
+  !
+  ! Equivalent to calling kriging_setup followed by kriging_solve_prepared.
+  ! Kept for standalone use; prefer the two-phase form when the same
+  ! neighbourhood is reused across multiple estimation blocks (the
+  ! factorization cache in kriging.F90 exploits that split).
+  !
+  ! Array layout (same as kriging_setup / kriging_solve_prepared):
+  !   matA  (n+p, n+p):  [ K   F  ]   K = covariance (SPD, n x n)
+  !                      [ F^T 0  ]   F = drift/design matrix (n x p)
+  !   rhsB  (q, n+p):   [ B  | G ]   B = covariance RHS (q x n), G = drift RHS (q x p)
+  !   x     (q, n+p):   [ W  | L ]   W = kriging weights, L = Lagrange multipliers
+  !-----------------------------------------------------------------------
   subroutine kriging_solve(n, p, q, matA, rhsB, x, info)
 
     implicit none
@@ -231,73 +324,14 @@ contains
     real,    intent(out) :: x(:, :)
     integer, intent(out) :: info
 
-    ! -------- locals ----------
-    real    :: L(n,n)
-    real    :: kinv_drift(n,p)    ! K⁻¹ F  (n×p, column-major for LAPACK)
-    real    :: kinv_rhs(n,q)      ! K⁻¹ B  (n×q, column-major for LAPACK)
-    real    :: schur_mat(p,p)     ! Fᵀ K⁻¹ F  (p×p)
-    real    :: rhs_small(p,q)     ! Schur RHS  (p×q)
-    integer :: i
+    real :: L(n, n)
+    real :: kinv_drift(n, max(p, 1))
+    real :: schur_factor(max(p, 1), max(p, 1))
 
-    !--------------------------------------------------
-    ! Cholesky factorization  K = L Lᵀ
-    ! matA(1:n, 1:n) is contiguous — no copy needed.
-    L = matA(1:n, 1:n)
-    call spotrf(uplo, n, L, n, info)
+    call kriging_setup(n, p, matA, L, kinv_drift, schur_factor, info)
     if (info /= 0) return
-
-    !--------------------------------------------------
-    ! SIMPLE KRIGING  (p = 0)
-    if (p == 0) then
-      ! Transpose rhsB rows into column-major kinv_rhs for LAPACK
-      do i = 1, q
-        kinv_rhs(:, i) = rhsB(i, 1:n)
-      end do
-      call spotrs(uplo, n, q, L, n, kinv_rhs, n, info)
-      if (info /= 0) return
-      do i = 1, q
-        x(i, 1:n) = kinv_rhs(:, i)
-      end do
-      return
-    end if
-
-    !--------------------------------------------------
-    ! UNIVERSAL / ORDINARY KRIGING
-
-    ! kinv_drift = K⁻¹ F  (n×p, shared across all q RHS)
-    ! matA(1:n, n+1:n+p) is a contiguous column slice — no copy needed.
-    kinv_drift = matA(1:n, n+1:n+p)
-    call spotrs(uplo, n, p, L, n, kinv_drift, n, info)
-    if (info /= 0) return
-
-    ! kinv_rhs = K⁻¹ B  (n×q)
-    ! rhsB rows are strided — must transpose into column-major kinv_rhs.
-    do i = 1, q
-      kinv_rhs(:, i) = rhsB(i, 1:n)
-    end do
-    call spotrs(uplo, n, q, L, n, kinv_rhs, n, info)
-    if (info /= 0) return
-
-    ! Schur complement  S = Fᵀ K⁻¹ F  (p×p, shared)
-    schur_mat = matmul(transpose(matA(1:n, n+1:n+p)), kinv_drift)
-
-    ! Schur RHS:  Fᵀ K⁻¹ B − G  (p×q)
-    ! G = rhsB(1:q, n+1:n+p) — strided rows, extract column-by-column.
-    rhs_small = matmul(transpose(matA(1:n, n+1:n+p)), kinv_rhs)
-    do i = 1, q
-      rhs_small(:, i) = rhs_small(:, i) - rhsB(i, n+1:n+p)
-    end do
-
-    ! Solve  S Λ = rhs_small  (p×q small system)
-    call sposv(uplo, p, q, schur_mat, p, rhs_small, p, info)
-    if (info /= 0) return
-
-    ! Write weights and multipliers back into x
-    do i = 1, q
-      x(i, 1:n)     = kinv_rhs(:, i) - matmul(kinv_drift, rhs_small(:, i))
-      x(i, n+1:n+p) = rhs_small(:, i)
-    end do
-  end subroutine
+    call kriging_solve_prepared(n, p, q, L, kinv_drift, schur_factor, rhsB, x, info)
+  end subroutine kriging_solve
 
 
   subroutine ssysv_fallback(n, p, q, matA, rhsB, x, info)

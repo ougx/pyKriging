@@ -203,6 +203,8 @@ module kriging
     procedure :: set_search
     procedure :: search_neighbors
     procedure :: calc_covariance
+    procedure :: assemble_rhs
+    procedure :: assemble_lhs
     procedure :: assemble_linear_system
     procedure :: solve_linear_system
     procedure :: estimate_block
@@ -244,8 +246,43 @@ module kriging
     real,    allocatable :: x(:,:)           ! raw solver output (weights + multipliers) [1, matsize]
     real,    allocatable :: matA(:,:)        ! covariance matrix C          [matsize, matsize]
     real,    allocatable :: rhsB(:,:)        ! right-hand-side c0           [1, matsize]
+    ! ------------------------------------------------------------------
+    ! Single-slot factorization cache.
+    !
+    ! The covariance matrix K depends only on the neighbour set (inear),
+    ! the variogram model, rangescale, and localnugget — not on the block
+    ! location.  When consecutive blocks processed by this thread share the
+    ! same neighbour set, the Cholesky factorization of K can be reused:
+    ! only the RHS c0 (which does depend on block location) is rebuilt.
+    !
+    ! factor_cache_hit   : set by factor_cache_matches; tells solve_linear_system
+    !                      to skip kriging_setup and call kriging_solve_prepared
+    !                      directly with the cached factors.
+    ! factor_cache_valid : .true. once a successful kriging_setup has been stored.
+    !                      Guards against using uninitialised factor arrays.
+    ! factor_cache_rangescale  : rangescale value at the block whose factors are cached.
+    ! factor_cache_localnugget : localnugget value at the block whose factors are cached.
+    ! factor_cache_nnear : neighbour counts per variable at the cached block [ivar0:nvar].
+    ! factor_cache_inear : sorted neighbour indices at the cached block      [nmax, ivar0:nvar].
+    !                      Stored sorted so the comparison is order-independent
+    !                      (the KD-tree ranks by distance, which varies across blocks).
+    ! factor_L           : Cholesky factor of K                              [nppmax, nppmax].
+    ! factor_kinv_drift  : K^{-1} F (drift columns solved against K)         [nppmax, ndrift+unbias].
+    ! factor_schur       : Cholesky factor of the Schur complement F^T K^-1 F [ndrift+unbias, ndrift+unbias].
+    ! ------------------------------------------------------------------
+    logical              :: factor_cache_hit   = .false.
+    logical              :: factor_cache_valid = .false.
+    real                 :: factor_cache_rangescale  = 1.0
+    real                 :: factor_cache_localnugget = 0.0
+    integer, allocatable :: factor_cache_nnear(:)
+    integer, allocatable :: factor_cache_inear(:,:)
+    real,    allocatable :: factor_L(:,:)
+    real,    allocatable :: factor_kinv_drift(:,:)
+    real,    allocatable :: factor_schur(:,:)
   contains
     procedure :: initialize  => initialize_kriging_ctx
+    procedure :: factor_cache_matches   ! .true. if cached factors are valid for current block
+    procedure :: save_factor_cache_key  ! snapshot current neighbour set and block scalars into cache
     procedure :: assign_weight   ! split x into per-variable weight arrays
     procedure :: write_matrix    ! dump matA, rhsB, data to CSV for debugging
   end type t_kriging_ctx
@@ -973,15 +1010,23 @@ contains
     class(t_kriging_ctx) :: self
     class(t_kriging)     :: krige
 
-    integer :: ivar, mmax
+    integer :: ivar, mmax, pmax
     mmax = maxval(krige%obs%nmax)   ! max neighbours across all variables
+    pmax = krige%ndrift + krige%unbias
 
     associate(npp => krige%nppmax, matsize => krige%matsize_max)
       if (.not. krige%use_old_weight) then
         allocate(self%sqdist(mmax,    0:krige%nvar))
         allocate(self%matA  (matsize, matsize))
         allocate(self%rhsB  (1,       matsize))
+        allocate(self%factor_cache_nnear(0:krige%nvar))
+        allocate(self%factor_cache_inear(mmax, 0:krige%nvar))
+        allocate(self%factor_L(npp, npp))
+        allocate(self%factor_kinv_drift(npp, max(1, pmax)))
+        allocate(self%factor_schur(max(1, pmax), max(1, pmax)))
         self%sqdist = 0.0
+        self%factor_cache_nnear = 0
+        self%factor_cache_inear = 0
       end if
       allocate(self%nnear (     0:krige%nvar))
       allocate(self%inear (mmax,0:krige%nvar))
@@ -999,6 +1044,77 @@ contains
       end do
     end associate
   end subroutine initialize_kriging_ctx
+
+
+  !============================================================================
+  ! factor_cache_matches
+  !
+  ! Returns .true. when the stored Cholesky factorization can be reused for
+  ! the current block.  The factorization of K depends on:
+  !   - the neighbour set (inear, nnear per variable)
+  !   - the variogram model (skipped entirely when varying_vgm=.true.)
+  !   - rangescale and localnugget (both affect K values)
+  !
+  ! inear is compared after sorting (see search_neighbors), so the result is
+  ! order-independent: two blocks that share the same set of neighbours but
+  ! receive them in different distance-rank order from the KD-tree still match.
+  !
+  ! varying_vgm is short-circuited at the top: each block has its own
+  ! variogram model, so K can never be reused across blocks.
+  !============================================================================
+  logical function factor_cache_matches(self, krige)
+    class(t_kriging_ctx) :: self
+    class(t_kriging)     :: krige
+
+    integer :: ivar
+
+    factor_cache_matches = .false.
+
+    if (.not. self%factor_cache_valid) return
+    if (krige%varying_vgm) return
+    if (self%factor_cache_rangescale /= krige%block%rangescale(self%iblock)) return
+    if (self%factor_cache_localnugget /= krige%block%localnugget(self%iblock)) return
+
+    do ivar = krige%ivar0, krige%nvar
+      if (self%factor_cache_nnear(ivar) /= self%nnear(ivar)) return
+      if (self%nnear(ivar) > 0) then
+        if (any(self%factor_cache_inear(1:self%nnear(ivar), ivar) /= &
+                self%inear(1:self%nnear(ivar), ivar))) return
+      end if
+    end do
+
+    factor_cache_matches = .true.
+  end function factor_cache_matches
+
+
+  !============================================================================
+  ! save_factor_cache_key
+  !
+  ! Snapshot the current block's neighbour set and block-level scalars into
+  ! the cache fields so that factor_cache_matches can detect a hit on the
+  ! next block.  Called by solve_linear_system immediately after a successful
+  ! kriging_setup (Cholesky factorization), so the cached key always
+  ! corresponds to the factors stored in factor_L / factor_kinv_drift /
+  ! factor_schur.
+  !============================================================================
+  subroutine save_factor_cache_key(self, krige)
+    class(t_kriging_ctx) :: self
+    class(t_kriging)     :: krige
+
+    integer :: ivar
+
+    self%factor_cache_rangescale  = krige%block%rangescale (self%iblock)
+    self%factor_cache_localnugget = krige%block%localnugget(self%iblock)
+    self%factor_cache_nnear(krige%ivar0:krige%nvar) = self%nnear(krige%ivar0:krige%nvar)
+
+    do ivar = krige%ivar0, krige%nvar
+      if (self%nnear(ivar) > 0) then
+        self%factor_cache_inear(1:self%nnear(ivar), ivar) = &
+        self%inear(1:self%nnear(ivar), ivar)
+      end if
+    end do
+    self%factor_cache_valid = .true.
+  end subroutine save_factor_cache_key
 
 
   !============================================================================
@@ -1322,6 +1438,7 @@ contains
         end if
       end do
       nnear = k
+
     end associate
 #ifdef DEBUG
     print *, subname, " Finished.", ivar, ctx%iblock
@@ -1445,22 +1562,125 @@ contains
 #endif
   end subroutine calc_covariance
 
+  !============================================================================
+  ! assemble_rhs
+  !
+  ! Fill the right-hand-side covariance matrix (rhsB) for the current block.
+  ! Called by assemble_linear_system for every block.
+  !============================================================================
+  subroutine assemble_rhs(self, ctx)
+    class(t_kriging)     :: self
+    class(t_kriging_ctx) :: ctx
+
+    integer :: ivar, irow1, irow2
+
+    associate( &
+      iblock  => ctx%iblock, &
+      rhsB    => ctx%rhsB, &
+      nnear   => ctx%nnear, &
+      npp     => ctx%npp, &
+      matsize => ctx%matsize, &
+      ndrift  => self%ndrift)
+
+      rhsB(1, 1:matsize) = 0.0
+
+      irow1 = 0
+      do ivar = self%ivar0, self%nvar
+        if (nnear(ivar) == 0) cycle
+        irow2 = irow1 + nnear(ivar)
+        call self%calc_covariance(ctx, irow1, 0, ivar, -1)
+        irow1 = irow2
+      end do
+
+      if (ndrift > 0) rhsB(1, npp+1:npp+ndrift) = self%block%drift(:, iblock)
+
+      if (self%unbias == 1) rhsB(1, matsize) = 1.0
+    end associate
+  end subroutine assemble_rhs
+
+
+  !============================================================================
+  ! assemble_lhs
+  !
+  ! Fill the left-hand-side covariance matrix (matA) for the current block.
+  ! Called by assemble_linear_system on a factorization cache miss.
+  !
+  ! Matrix layout (ordinary kriging, two variables, npp = n1 + n2)
+  ! ---------------------------------------------------------------
+  !   [ C₁₁  C₁₂  F1 ] [ λ₁ ]   [ c₀₁ ] rows/cols 1:n1
+  !   [ C₂₁  C₂₂  F2 ] [ λ₂ ] = [ c₀₂ ] rows/cols n1+1:npp
+  !   [ F1ᵀ  F2ᵀ   0 ] [ μ  ]   [ f₀  ] npp+1:matsize
+
+  ! Only the upper triangle of the npp×npp covariance block is computed by
+  ! calc_covariance (jvar >= ivar); the lower triangle is mirrored afterward.
+  ! Drift columns F (obs drift values at neighbour locations) and the
+  ! unbiasedness constraint column (all ones) are filled explicitly.
+  !============================================================================
+  subroutine assemble_lhs(self, ctx)
+    class(t_kriging)     :: self
+    class(t_kriging_ctx) :: ctx
+
+    integer :: ivar, jvar, irow1, irow2, icol1, icol2
+
+    associate( &
+      matA    => ctx%matA, &
+      inear   => ctx%inear, &
+      nnear   => ctx%nnear, &
+      npp     => ctx%npp, &
+      matsize => ctx%matsize, &
+      ndrift  => self%ndrift)
+
+      irow1 = 0
+      rowloop: do ivar = self%ivar0, self%nvar
+        if (nnear(ivar) == 0) cycle
+        irow2 = irow1 + nnear(ivar)
+        icol1 = 0
+
+        !-- Upper triangle: C(ivar neighbours, jvar neighbours)
+        columnloop: do jvar = self%ivar0, self%nvar
+          if (nnear(jvar) == 0) cycle
+          icol2 = icol1 + nnear(jvar)
+          if (jvar >= ivar) call self%calc_covariance(ctx, irow1, icol1, ivar, jvar)
+          icol1 = icol2
+        end do columnloop
+
+        !-- Drift columns: obs(ivar)%drift at neighbour locations
+        if (ndrift > 0) then
+          icol2 = icol1 + ndrift
+          matA(icol1+1:icol2, irow1+1:irow2) = &
+            self%obs(ivar)%drift(:, inear(1:nnear(ivar), ivar))
+        end if
+        irow1 = irow2
+      end do rowloop
+
+      !-- Unbiasedness constraint column: sum(weights) = 1
+      if (self%unbias == 1) matA(matsize, 1:npp) = 1.0
+
+      !-- Mirror lower triangle from upper (C is symmetric)
+      do irow1 = 1, npp
+        do icol1 = irow1+1, matsize
+          matA(irow1, icol1) = matA(icol1, irow1)
+        end do
+      end do
+
+      !-- Zero the constraint-row diagonal block (no constraint-constraint covariance)
+      matA(npp+1:matsize, npp+1:matsize) = 0.0
+    end associate
+  end subroutine assemble_lhs
+
 
   !============================================================================
   ! assemble_linear_system
   !
-  ! Build the full kriging matrix (matA) and RHS vector (rhsB) for block ib.
+  ! Orchestrate neighbour search, exact-match detection, cache check, and
+  ! matrix/RHS assembly for the current block.
   !
-  ! Matrix layout (ordinary kriging, two variables)
-  ! ------------------------------------------------
-  !   [ C11  C12  1  0 ] [ lambda1 ]   [ c01 ]
-  !   [ C21  C22  0  1 ] [ lambda2 ] = [ c02 ]
-  !   [ 1^T  0    0  0 ] [ mu1     ]   [ 1   ]
-  !   [ 0    1^T  0  0 ] [ mu2     ]   [ 1   ]
+  ! On a factorization cache hit (same neighbour set as the previous block):
+  !   assemble_rhs only — the LHS factorization is reused in solve_linear_system.
   !
-  ! For simple kriging (unbias=0): the last two rows/columns are omitted.
-  ! For drift functions (ndrift>0): additional rows/columns are inserted after
-  ! the covariance block and before the unbiasedness row.
+  ! On a cache miss:
+  !   assemble_lhs — fills matA (covariance, drift, unbiasedness columns)
+  !   assemble_rhs — fills rhsB (target covariances, drift, unbiasedness RHS)
   !
   ! Exact-match detection
   ! ---------------------
@@ -1468,20 +1688,17 @@ contains
   ! the system is bypassed: the weight is set to 1 for that observation and 0
   ! elsewhere, and the kriging variance is set to the observation error variance
   ! plus the local nugget (not zero, because measurement error is unresolved).
-  !
-  ! Symmetry
-  ! --------
-  ! calc_covariance fills only the upper triangle (jvar >= ivar).
-  ! After all blocks are filled, the lower triangle is mirrored from the upper.
   !============================================================================
   subroutine assemble_linear_system(self, ctx)
     class(t_kriging)     :: self
     class(t_kriging_ctx) :: ctx
 
-    integer          :: ivar, jvar, irow1, irow2, icol1, icol2
+    integer          :: ivar, jvar
     character(len=*), parameter :: subname = "t_kriging%assemble_linear_system"
 
     associate(nvar => self%nvar, dist => ctx%sqdist, npp => ctx%npp)
+
+      ctx%factor_cache_hit = .false.
 
       !-- Find neighbours for each variable
       do ivar = 1, nvar
@@ -1490,6 +1707,7 @@ contains
         !-- Exact match: an observation coincides with the block centre
         if (ivar == 1 .and. minval(dist(1:ctx%nnear(ivar), ivar)) <= EPSLON) then
           npp = 1
+          ctx%matsize = 1
           ctx%x = 0.0;  ctx%x(:, 1) = 1.0
           ctx%weight = 0.0;  ctx%weight(1, 1) = 1.0
           ctx%inear(1, ivar) = ctx%inear(minloc(dist(1:ctx%nnear(ivar), ivar), dim=1), ivar)
@@ -1510,66 +1728,29 @@ contains
         return
       end if
 
-      !-- Assemble matrix blocks
-      associate( &
-        iblock  => ctx%iblock, &
-        matA    => ctx%matA, &
-        rhsB    => ctx%rhsB, &
-        inear   => ctx%inear, &
-        nnear   => ctx%nnear, &
-        matsize => ctx%matsize, &
-        ndrift  => self%ndrift)
+      !-- Sort neighbour indices into canonical order for the factorization cache.
+      !   The KD-tree ranks by distance; two blocks sharing the same neighbour set
+      !   but at different locations receive them in different distance-rank order.
+      !   Sorting by observation index makes factor_cache_matches order-independent.
+      !   Done here (after exact-match detection) so dist stays in its natural
+      !   distance-rank order for the minloc(dist) call above.
+      !   ivar=0 (SGSIM previously-simulated blocks) is not sorted: nnear(0)
+      !   changes at virtually every SGSIM step so the cache never hits on it.
+      do ivar = 1, nvar
+        if (ctx%nnear(ivar) > 0) call isort(ctx%inear(1:ctx%nnear(ivar), ivar), ctx%nnear(ivar))
+      end do
 
-        matsize = npp + self%unbias + ndrift
+      ctx%matsize = npp + self%unbias + self%ndrift
 
-        !-- Loop over row-variable blocks
-        irow1 = 0
-        rowloop: do ivar = self%ivar0, nvar
-          if (nnear(ivar) == 0) cycle
-          irow2 = irow1 + nnear(ivar)
-          icol1 = 0
+      if (ctx%factor_cache_matches(self)) then
+        ctx%factor_cache_hit = .true.
+        call self%assemble_rhs(ctx)
+        return
+      end if
 
-          !-- RHS: covariance between ivar neighbours and the block
-          call self%calc_covariance(ctx, irow1, icol1, ivar, -1)
-
-          !-- Upper triangle of the covariance matrix
-          columnloop: do jvar = self%ivar0, nvar
-            if (nnear(jvar) == 0) cycle
-            icol2 = icol1 + nnear(jvar)
-            if (jvar >= ivar .and. nnear(jvar) > 0) then
-              call self%calc_covariance(ctx, irow1, icol1, ivar, jvar)
-            end if
-            icol1 = icol2
-          end do columnloop
-
-          !-- Drift columns: D(ivar) = obs(ivar)%drift at neighbour locations
-          if (ndrift > 0) then
-            icol2 = icol1 + ndrift
-            matA(icol1+1:icol2, irow1+1:irow2) = &
-              self%obs(ivar)%drift(:, inear(1:nnear(ivar), ivar))
-          end if
-          irow1 = irow2
-        end do rowloop
-
-        !-- Drift row in the RHS: drift value at the block centre
-        if (ndrift > 0) rhsB(1, npp+1:npp+ndrift) = self%block%drift(:, iblock)
-
-        !-- Unbiasedness constraint row/column: sum(weights) = 1
-        if (self%unbias == 1) then
-          matA(matsize, 1:ctx%npp) = 1.0
-          rhsB(1, matsize)         = 1.0
-        end if
-
-        !-- Mirror lower triangle from upper triangle (C is symmetric)
-        do irow1 = 1, npp
-          do icol1 = irow1+1, matsize
-            matA(irow1, icol1) = matA(icol1, irow1)
-          end do
-        end do
-
-        !-- Zero out the constraint-row diagonal block (no constraint-constraint cov)
-        matA(npp+1:matsize, npp+1:matsize) = 0.0
-      end associate
+      ctx%factor_cache_valid = .false.
+      call self%assemble_lhs(ctx)
+      call self%assemble_rhs(ctx)
     end associate
 #ifdef DEBUG
     print *, subname, " Finished.", ctx%iblock
@@ -1612,7 +1793,7 @@ contains
     class(t_kriging)     :: self
     class(t_kriging_ctx) :: ctx
 
-    integer            :: info, i, j, k1, ivgm
+    integer            :: info, i, j, k1, ivgm, p
     real               :: lag(3)
     character(len=*), parameter :: subname = "t_kriging%solve_linear_system"
 
@@ -1630,13 +1811,26 @@ contains
       ndrift    => self%ndrift)
 
       ivgm = merge(ctx%iblock, 1, self%varying_vgm)
+      p = unbias + ndrift
 
-      !-- Primary solver: packed Cholesky (SSPSV)
-      call kriging_solve(npp, unbias + ndrift, 1, matA, rhsB, x, info)
+      !-- Primary solver: Cholesky setup plus per-block RHS solve.
+      if (ctx%factor_cache_hit) then
+        call kriging_solve_prepared(npp, p, 1, ctx%factor_L, ctx%factor_kinv_drift, &
+                                    ctx%factor_schur, rhsB, x, info)
+      else
+        call kriging_setup(npp, p, matA, ctx%factor_L, ctx%factor_kinv_drift, &
+                           ctx%factor_schur, info)
+        if (info == 0) then
+          call ctx%save_factor_cache_key(self)
+          call kriging_solve_prepared(npp, p, 1, ctx%factor_L, ctx%factor_kinv_drift, &
+                                      ctx%factor_schur, rhsB, x, info)
+        end if
+      end if
 
       !-- Fallback: symmetric indefinite solver (SSYSV)
       if (info /= 0) then
-        call ssysv_fallback(npp, unbias + ndrift, 1, matA, rhsB, x, info)
+        ctx%factor_cache_valid = .false.
+        call ssysv_fallback(npp, p, 1, matA, rhsB, x, info)
         if (self%verbose) &
           print*, "Cholesky fails. Fallback SSYSV is used for block", iblock
       end if
@@ -2174,5 +2368,30 @@ end subroutine update_info
     if (associated(self%vgm))   deallocate(self%vgm)
     if (associated(self%krige_info)) deallocate(self%krige_info)
   end subroutine finalize
+
+
+  !============================================================================
+  ! isort
+  !
+  ! In-place insertion sort on the first n elements of integer array a.
+  ! Insertion sort is optimal for the small n typical of kriging neighbourhoods
+  ! (nmax = 20-50): O(n) for nearly-sorted input, no allocation, cache-friendly.
+  !============================================================================
+  pure subroutine isort(a, n)
+    integer, intent(inout) :: a(:)
+    integer, intent(in)    :: n
+    integer :: i, j, tmp
+    do i = 2, n
+      tmp = a(i)
+      j   = i - 1
+      do while (j >= 1 .and. a(j) > tmp)
+        a(j+1) = a(j)
+        j = j - 1
+      end do
+      a(j+1) = tmp
+    end do
+  end subroutine isort
+
+
 
 end module kriging

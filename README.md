@@ -468,7 +468,7 @@ with mp.Pool(4) as pool:
 pykriging/
 ├── src/                 Source codes
 │   ├── libkriging       Core kriging engine/library
-│   ├── ppsgs            Pilot point based SGSIM tool
+│   ├── sparks           Pilot point based Kriging and SGSIM CLI
 │   └── pykriging        Python wrapper
 ├── tests/               pytest test suite
 ├── test_data/           CSV files used by the test suite
@@ -478,6 +478,16 @@ pykriging/
 ├── LICENSE              MIT
 └── README.md
 ```
+
+---
+
+## Performance notes
+
+**Factorization cache** — The Fortran core caches the Cholesky factorization of
+the kriging matrix on a per-thread basis.  When consecutive estimation blocks
+share the same neighbour set (common on regular grids), the cached factorization
+is reused — only the right-hand side is reassembled.  This can give a significant
+speedup on dense grids where neighbours change slowly across the domain.
 
 ---
 
