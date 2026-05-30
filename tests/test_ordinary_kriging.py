@@ -166,3 +166,103 @@ class TestPC2DKriging:
         margin = 0.10 * (value.max() - value.min())
         assert est.min() >= value.min() - margin
         assert est.max() <= value.max() + margin
+
+
+# ---------------------------------------------------------------------------
+# maxdist filtering tests
+# ---------------------------------------------------------------------------
+
+class TestMaxDist:
+    """
+    Verify that the maxdist parameter excludes observations beyond the search
+    radius from the kriging system.
+
+    Synthetic layout (2-D, x-axis only):
+        obs A at x=0  value=1.0  }  "near" cluster
+        obs B at x=2  value=1.0  }
+        obs C at x=200 value=999.0   "far" outlier
+
+    Target grid node at x=1 (between A and B).
+
+    Variogram: spherical, range=500 so all three obs are within range and the
+    far outlier genuinely influences the full-neighbourhood estimate.
+    """
+
+    _COORD  = np.array([[0.0, 0.0], [2.0, 0.0], [200.0, 0.0]])
+    _VALUE  = np.array([1.0, 1.0, 999.0])
+    _TARGET = np.array([[0.5, 0.0]])
+    _VGM    = dict(vtype="sph", nugget=0.0, sill=1.0, a_major=1.0)
+
+    def _solve(self, maxdist=None, nmax=3):
+        k = Kriging(ndim=2, nvar=1)
+        kw = dict(ivar=1, coord=self._COORD, value=self._VALUE, nmax=nmax)
+        if maxdist is not None:
+            kw["maxdist"] = maxdist
+        k.set_obs(**kw)
+        k.set_vgm(ivar=1, jvar=1, **self._VGM)
+        k.set_grid(coord=self._TARGET)
+        k.set_search(ivar=1)
+        k.solve()
+        est, var = k.get_results()
+        return float(est[0]), float(var[0])
+
+    def test_far_obs_influences_full_estimate(self):
+        """Sanity check: without maxdist the far outlier (999) pulls the
+        estimate above 1.0, confirming it participates in the system."""
+        est_full, _ = self._solve()
+        assert est_full > 1.1, (
+            f"Expected far obs to pull estimate above 1.1, got {est_full:.4f}. "
+            "Check that the variogram range is large enough."
+        )
+
+    def test_maxdist_excludes_far_obs(self):
+        """With maxdist=10, the outlier at x=200 is excluded and the estimate
+        should be close to 1.0 (the value of both near observations)."""
+        est_limited, _ = self._solve(maxdist=10.0)
+        assert est_limited == pytest.approx(1.0, abs=0.001), (
+            f"Expected ≈1.0 with maxdist=10 (far obs excluded), got {est_limited:.4f}"
+        )
+
+    def test_maxdist_large_matches_full_estimate(self):
+        """maxdist larger than all pairwise distances must give the same result
+        as running without maxdist."""
+        est_full,    var_full    = self._solve()
+        est_large,   var_large   = self._solve(maxdist=1e6)
+        assert est_large == pytest.approx(est_full,  rel=1e-5)
+        assert var_large == pytest.approx(var_full,  rel=1e-5)
+
+    def test_maxdist_no_obs_in_range_raises(self):
+        """When every observation is beyond maxdist the solver has no
+        neighbours and must raise an error."""
+        coord  = np.array([[0.0, 0.0], [1.0, 0.0]])
+        value  = np.array([1.0, 2.0])
+        target = np.array([[100.0, 0.0]])   # far from all obs
+        k = Kriging(ndim=2, nvar=1)
+        k.set_obs(ivar=1, coord=coord, value=value, nmax=2, maxdist=1.0)
+        k.set_vgm(ivar=1, jvar=1, vtype="sph", nugget=0.0, sill=1.0, a_major=5.0)
+        k.set_grid(coord=target)
+        k.set_search(ivar=1)
+        with pytest.raises(Exception):
+            k.solve()
+
+    def test_maxdist_subset_vs_trimmed_obs(self):
+        """
+        Filtering via maxdist must give the same estimate as manually removing
+        the out-of-range observations before kriging.
+        """
+        # Only pass the two near observations directly (no far outlier)
+        coord_near  = self._COORD[:2]
+        value_near  = self._VALUE[:2]
+        k = Kriging(ndim=2, nvar=1)
+        k.set_obs(ivar=1, coord=coord_near, value=value_near, nmax=2)
+        k.set_vgm(ivar=1, jvar=1, **self._VGM)
+        k.set_grid(coord=self._TARGET)
+        k.set_search(ivar=1)
+        k.solve()
+        est_trimmed, var_trimmed = k.get_results()
+
+        # Same dataset but with all three obs and maxdist=10 (excludes far obs)
+        est_maxdist, var_maxdist = self._solve(maxdist=10.0)
+
+        assert float(est_maxdist) == pytest.approx(float(est_trimmed[0]), rel=1e-4)
+        assert float(var_maxdist) == pytest.approx(float(var_trimmed[0]), rel=1e-4)
