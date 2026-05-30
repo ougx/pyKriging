@@ -111,6 +111,24 @@ def _status_cfun(name, argtypes):
     checked._cfunc = fn
     return checked
 
+def _optional_status_cfun(name, argtypes):
+    """Like _status_cfun but tolerates a missing DLL symbol.
+
+    If the symbol is absent (e.g. the library was compiled before this feature
+    was added), returns a stub that raises a clear RuntimeError when called,
+    instead of crashing the whole module at import time.
+    """
+    try:
+        return _status_cfun(name, argtypes)
+    except AttributeError:
+        def _stub(*_args, **_kwargs):
+            raise RuntimeError(
+                f"'{name}' was not found in the compiled library.  "
+                "Recompile the Fortran library to enable the weight-store API."
+            )
+        _stub.__name__ = name
+        return _stub
+
 _ptr_int64 = ctypes.POINTER(ctypes.c_int64)
 _krige_create      = _status_cfun("krige_create",      [_ptr_int64])
 _krige_destroy     = _status_cfun("krige_destroy",     [_ptr_int64])
@@ -188,6 +206,18 @@ _krige_get_nsim    = _status_cfun("krige_get_nsim",    [ctypes.c_int64, _ptr_int
 _krige_get_estimate    = _status_cfun("krige_get_estimate",    [ctypes.c_int64, _c_int, _c_int, _ptr_dbl])
 _krige_get_estimate_all= _status_cfun("krige_get_estimate_all",[ctypes.c_int64, _c_int, _c_int, _c_int, _ptr_dbl])
 _krige_get_variance    = _status_cfun("krige_get_variance",    [ctypes.c_int64, _c_int, _ptr_dbl])
+
+_krige_alloc_weight_store = _optional_status_cfun("krige_alloc_weight_store", [ctypes.c_int64])
+_krige_free_weight_store  = _optional_status_cfun("krige_free_weight_store",  [ctypes.c_int64])
+_krige_get_weight_dims    = _optional_status_cfun("krige_get_weight_dims",
+    [ctypes.c_int64, _ptr_int, _ptr_int, _ptr_int])
+_krige_get_weight_nnear   = _optional_status_cfun("krige_get_weight_nnear",
+    [ctypes.c_int64, _c_int, _c_int, _ptr_int])
+_krige_get_weight_inear   = _optional_status_cfun("krige_get_weight_inear",
+    [ctypes.c_int64, _c_int, _c_int, _c_int, _ptr_int])
+_krige_get_weight_data    = _optional_status_cfun("krige_get_weight_data",
+    [ctypes.c_int64, _c_int, _c_int, _c_int, _ptr_dbl])
+
 _krige_get_last_error = _cfun("krige_get_last_error", [_ptr_char, _c_int], _c_int)
 
 _krige_to_str      = _cfun("krige_to_str"   , [ctypes.c_int64], _ptr_void)
@@ -1057,6 +1087,87 @@ class Kriging:
                 pass
             self._handle = 0
 
+    # ------------------------------------------------------------------
+    def alloc_weight_store(self):
+        """Allocate the in-memory weight store.
+
+        Normally you do **not** need to call this directly.  Setting
+        ``store_weight=True`` in the constructor causes :meth:`solve` to
+        allocate the store automatically via :meth:`prepare`.
+
+        Call explicitly only when you want in-memory weight access
+        *without* setting ``store_weight=True`` (e.g. post-solve inspection).
+        Must be called after :meth:`set_search` so that ``nmax`` is set.
+        """
+        _krige_alloc_weight_store(_h(self._handle))
+
+    # ------------------------------------------------------------------
+    def free_weight_store(self):
+        """Release the in-memory weight store, freeing its memory."""
+        _krige_free_weight_store(_h(self._handle))
+
+    # ------------------------------------------------------------------
+    def get_weights(self) -> dict:
+        """Return the stored kriging weights and neighbour indices.
+
+        :meth:`alloc_weight_store` must have been called before
+        :meth:`solve`.
+
+        Returns
+        -------
+        dict with keys:
+
+        ``nnear`` : ndarray, shape ``(nblock, ngroups)``, dtype int32
+            Number of active neighbours for each block and group.
+            Group indices 0..nvar-1 are real-observation groups (variable
+            1..nvar); groups nvar..ngroups-1 are simulated-block groups
+            (SGSIM only, nvar=1 → one extra group).
+
+        ``inear`` : ndarray, shape ``(nblock, ngroups, nmax)``, dtype int32
+            1-based neighbour indices.  Entries beyond ``nnear[ib, ig]``
+            are zero.
+
+        ``weight`` : ndarray, shape ``(nblock, ngroups, nmax)``, dtype float64
+            Kriging weights.  Entries beyond ``nnear[ib, ig]`` are zero.
+        """
+        nb_out = ctypes.c_int(0)
+        ng_out = ctypes.c_int(0)
+        nm_out = ctypes.c_int(0)
+        _krige_get_weight_dims(
+            _h(self._handle),
+            ctypes.byref(nb_out), ctypes.byref(ng_out), ctypes.byref(nm_out),
+        )
+        nb, ng, nm = nb_out.value, ng_out.value, nm_out.value
+
+        # Allocate Fortran-order buffers matching the CAPI layout
+        nnear_f  = np.zeros((ng, nb),     dtype=np.int32,   order='F')
+        inear_f  = np.zeros((nm, ng, nb), dtype=np.int32,   order='F')
+        weight_f = np.zeros((nm, ng, nb), dtype=np.float64, order='F')
+
+        _krige_get_weight_nnear(
+            _h(self._handle), _c_int(ng), _c_int(nb),
+            nnear_f.ctypes.data_as(_ptr_int),
+        )
+        _krige_get_weight_inear(
+            _h(self._handle), _c_int(nm), _c_int(ng), _c_int(nb),
+            inear_f.ctypes.data_as(_ptr_int),
+        )
+        _krige_get_weight_data(
+            _h(self._handle), _c_int(nm), _c_int(ng), _c_int(nb),
+            weight_f.ctypes.data_as(_ptr_dbl),
+        )
+
+        # Transpose to Python-friendly (block-major) layout:
+        #   nnear_f  (ng, nb)      → .T → (nb, ng)
+        #   inear_f  (nm, ng, nb)  → .T → (nb, ng, nm)
+        #   weight_f (nm, ng, nb)  → .T → (nb, ng, nm)
+        return {
+            "nnear":  np.ascontiguousarray(nnear_f.T),
+            "inear":  np.ascontiguousarray(inear_f.T),
+            "weight": np.ascontiguousarray(weight_f.T),
+        }
+
+    # ------------------------------------------------------------------
     def get_info(self):
         ptr = _krige_to_str(_h(self._handle))
         if not ptr:

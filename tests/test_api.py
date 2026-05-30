@@ -161,19 +161,6 @@ class TestOperationalModes:
         k.solve()
         return k.get_results()
 
-    def test_weight_file_roundtrip_matches_normal_solve(self, tmp_path):
-        """Stored weights should be reusable without changing estimates."""
-        weight_file = tmp_path / "weights.fac"
-        est_ref, var_ref = self._solve()
-
-        self._solve(store_weight=True, weight_file=str(weight_file))
-        assert weight_file.exists()
-        assert weight_file.stat().st_size > 0
-
-        est_old, var_old = self._solve(use_old_weight=True, weight_file=str(weight_file))
-        np.testing.assert_allclose(est_old, est_ref, rtol=1e-10, atol=1e-10)
-        np.testing.assert_allclose(var_old, var_ref, rtol=1e-10, atol=1e-10)
-
     def test_write_mat_with_openmp_writes_debug_files(self, tmp_path, monkeypatch):
         """write_mat should be safe under OpenMP and write one file set per block."""
         monkeypatch.setenv("OMP_NUM_THREADS", "2")

@@ -183,6 +183,12 @@ _CAPI_EXPORTS = [
     "krige_get_estimate_all",
     "krige_get_variance",
     "krige_get_last_error",
+    "krige_alloc_weight_store",
+    "krige_free_weight_store",
+    "krige_get_weight_dims",
+    "krige_get_weight_nnear",
+    "krige_get_weight_inear",
+    "krige_get_weight_data",
     # Space-time kriging
     "krige_st_create",
     "krige_st_destroy",

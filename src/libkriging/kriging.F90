@@ -148,6 +148,32 @@ module kriging
   !============================================================================
 
   !============================================================================
+  ! t_weight_store — in-memory storage of per-block kriging weights
+  !
+  ! Allocated on demand by alloc_weight_store() before solve(), then filled
+  ! block-by-block during solve().  Retrieve results via the CAPI get functions.
+  !
+  ! Array layout (Fortran column-major):
+  !   nnear (ngroups, nblock)         — neighbour count per group per block
+  !   inear (nmax,   ngroups, nblock) — neighbour obs/block indices (0 = unused)
+  !   weight(nmax,   ngroups, nblock) — primary-variable kriging weights
+  !   x(q, matsize_max, nblock)       — full solved RHS matrix for joint SGSIM
+  !
+  ! nmax is the maximum nmax across all obs variables (set by set_search).
+  !============================================================================
+  type :: t_weight_store
+    integer              :: nblock  = 0
+    integer              :: ngroups = 0
+    integer              :: nmax    = 0
+    integer              :: q       = 0
+    integer              :: matsize_max = 0
+    integer, allocatable :: nnear (:,   :)   ! [ngroups, nblock]
+    integer, allocatable :: inear (:,:, :)   ! [nmax,    ngroups, nblock]
+    real,    allocatable :: weight(:,:, :)   ! [nmax,    ngroups, nblock]
+    real,    allocatable :: x     (:,:, :)   ! [q,       matsize_max, nblock]
+  end type t_weight_store
+
+  !============================================================================
   ! t_kriging — main kriging object
   !
   ! Holds all problem-level state and provides the full API.  Thread-local
@@ -159,7 +185,7 @@ module kriging
     logical              :: anisotropic_search = .false. ! use rotated coords for NN search
     logical              :: weight_correction  = .false. ! clip negative weights to 0 and renorm
     logical              :: use_old_weight     = .false. ! read weights from factor file
-    logical              :: store_weight       = .false. ! write weights to factor file
+    logical              :: store_weight       = .false. ! save weights in memory (and optionally to weight_file)
     logical              :: cross_validation   = .false. ! leave-one-out cross-validation mode
     logical              :: write_mat          = .false. ! dump matrices to CSV for debugging
     logical              :: verbose            = .false. ! print progress to stdout
@@ -189,6 +215,8 @@ module kriging
     real                 :: sk_mean = 0.0
 
     character(kind=c_char), pointer  :: krige_info(:) => null() ! kriging info string
+    !-- Optional in-memory weight store (allocated by alloc_weight_store before solve)
+    type(t_weight_store), allocatable :: wstore
     !-- Pointers to the three spatial objects and the variogram matrix
     type(t_obsgrid)  , pointer :: obs(:)     => null() ! observations  [1:nvar]
     type(t_grid)     , pointer :: grid       => null() ! integration nodes
@@ -213,11 +241,15 @@ module kriging
     procedure :: prepare
     procedure :: solve
     procedure :: write_weight
+    procedure :: write_weight_store
     procedure :: read_weight
     procedure :: validate_vgm
     procedure :: reset_obs
     procedure :: reset_grid
     procedure :: reset_block
+    procedure :: alloc_weight_store
+    procedure :: free_weight_store
+    procedure :: save_block_weights
     procedure :: finalize
     procedure :: to_str
     procedure :: update_info
@@ -365,10 +397,6 @@ contains
     !-- Sanity checks: mutually exclusive flag combinations
     if (self%use_old_weight .and. self%weight_file == "") then
       call kriging_error(subname, 'use_old_weight requires weight_file to be specified')
-      return
-    end if
-    if (self%store_weight .and. self%weight_file == "") then
-      call kriging_error(subname, 'store_weight requires weight_file to be specified')
       return
     end if
     if (self%store_weight .and. self%use_old_weight) then
@@ -1023,6 +1051,7 @@ contains
     class(t_kriging)     :: krige
 
     integer :: ivar, mmax, pmax, q
+    logical :: need_rhs
     mmax = maxval(krige%obs%nmax)   ! max neighbours across all variables
     pmax = krige%ndrift + krige%unbias
     !-- q: number of RHS columns; nvar for joint co-sim, 1 otherwise
@@ -1030,10 +1059,11 @@ contains
 
     associate(npp => krige%nppmax, matsize => krige%matsize_max, &
               ng  => krige%ngroups)
+      need_rhs = .not. krige%use_old_weight .or. (krige%nvar > 1 .and. krige%nsim > 0)
+
       if (.not. krige%use_old_weight) then
         allocate(self%sqdist(mmax,    ng))
         allocate(self%matA  (matsize, matsize))
-        allocate(self%rhsB  (q,       matsize))
         allocate(self%factor_cache_nnear(ng))
         allocate(self%factor_cache_inear(mmax, ng))
         allocate(self%factor_L(npp, npp))
@@ -1043,6 +1073,7 @@ contains
         self%factor_cache_nnear = 0
         self%factor_cache_inear = 0
       end if
+      if (need_rhs) allocate(self%rhsB(q, matsize))
       allocate(self%nnear (ng))
       allocate(self%inear (mmax, ng))
       allocate(self%weight(mmax, ng))
@@ -1148,7 +1179,8 @@ contains
   ! that the covariance between a target block and its previously simulated
   ! neighbours (index 0) uses the primary variogram model.
   !
-  ! Weight file: opens for reading (use_old_weight) or writing (store_weight).
+  ! Weight file: opens for reading when use_old_weight=.true.
+  ! store_weight=.true.: auto-allocates wstore; file is written after solve().
   !============================================================================
   subroutine prepare(self)
     class(t_kriging) :: self
@@ -1192,13 +1224,17 @@ contains
       end do
       matsize = npp + self%ndrift + self%unbias
 
-      !-- Open weight file
+      !-- Weight file: open for reading when reusing pre-computed weights.
       if (self%use_old_weight) then
         open(newunit=ifile, file=trim(self%weight_file), status='old')
         read(ifile, *)   ! skip header line
-      else if (self%store_weight) then
-        open(newunit=ifile, file=trim(self%weight_file), status='replace')
-        write(ifile, *) self%block%n, self%nvar, (self%obs(ivar)%nmax, ivar=1, self%nvar)
+      end if
+
+      !-- store_weight: auto-allocate the in-memory weight store so every block
+      !   can write its weights without per-block file I/O in the hot loop.
+      if (self%store_weight) then
+        call self%alloc_weight_store()
+        if (kriging_failed()) return
       end if
 
     end associate
@@ -1251,7 +1287,7 @@ contains
       if (verbose) open(unit=6, carriagecontrol='fortran')
 #endif
 
-      !$OMP PARALLEL DEFAULT(SHARED) PRIVATE(ctx) IF(self%nsim==0 .and. .not. (self%store_weight .or. self%use_old_weight))
+      !$OMP PARALLEL DEFAULT(SHARED) PRIVATE(ctx) IF(self%nsim==0 .and. .not. self%use_old_weight)
       allocate(ctx)                        ! each thread gets its own ctx
       call ctx%initialize(self)
 
@@ -1267,8 +1303,9 @@ contains
         ctx%iblock = ib
 
         if (self%use_old_weight) then
-          !-- Factor-file path: read pre-computed weights, skip the solve
+          !-- Factor-file path: read pre-computed weights/solutions, skip the solve.
           call self%read_weight(ctx)
+          if (self%nvar > 1 .and. self%nsim > 0) call self%assemble_rhs(ctx)
         else
           call self%assemble_linear_system(ctx)
           if (kriging_failed()) cycle
@@ -1278,7 +1315,7 @@ contains
           call ctx%assign_weight(self)
         end if
 
-        if (self%store_weight) call self%write_weight(ctx)
+        if (self%store_weight) call self%save_block_weights(ctx)
         call self%estimate_block(ctx)
         if (self%write_mat) then
           ! Files are named per block, but the Fortran runtime still shares
@@ -1292,12 +1329,15 @@ contains
       deallocate(ctx)     ! explicit per-thread cleanup; avoids crash on runtime auto-finalization of PRIVATE allocatables
       !$OMP END PARALLEL
 
-      ! Factor files are opened in prepare() and written/read inside the block
-      ! loop.  Close them here so Windows flushes buffered writes before Python
-      ! reopens the file in a later Kriging object.
-      if (self%store_weight .or. self%use_old_weight) then
+      !-- Close the read-only factor file (use_old_weight path).
+      if (self%use_old_weight) then
         close(self%ifile)
         self%ifile = 0
+      end if
+
+      !-- Persist the in-memory weight store to disk when a path was given.
+      if (self%store_weight .and. trim(self%weight_file) /= "") then
+        call self%write_weight_store()
       end if
 
       if (kriging_failed()) return
@@ -2381,18 +2421,20 @@ end subroutine update_info
   !
   ! Serialise / deserialise per-block kriging weights to the factor file.
   !
-  ! Factor file format (three lines per block):
-  !   Line 1: order(ib)  kriging_variance  nnear(0:nvar)
-  !   Line 2: inear(1:nnear(0),0)  inear(1:nnear(1),1) ...  (neighbour indices)
-  !   Line 3: weight(1:nnear(0),0) weight(1:nnear(1),1) ... (kriging weights)
+  ! Factor file format (three lines per block, plus joint SGSIM solution rows):
+  !   Line 1: order(ib)  kriging_variance  nnear(1:ngroups)
+  !   Line 2: inear(1:nnear(1),1) ...  (neighbour indices)
+  !   Line 3: weight(1:nnear(1),1) ... (primary-variable kriging weights)
+  !   Joint SGSIM only: nvar extra lines containing x(kvar,1:matsize).
   !
-  ! read_weight is used when use_old_weight=.true. (factor-file reuse mode).
-  ! write_weight is used when store_weight=.true.  (factor-file creation mode).
+  ! read_weight      is used when use_old_weight=.true. (factor-file reuse mode).
+  ! write_weight     kept for direct use; no longer called by solve().
+  ! write_weight_store writes the completed wstore to weight_file after solve().
   !============================================================================
   subroutine write_weight(self, ctx)
     class(t_kriging)     :: self
     class(t_kriging_ctx) :: ctx
-    integer              :: ii
+    integer              :: ii, kvar
     associate( &
       ib    => ctx%iblock, &
       order => self%block%order, &
@@ -2400,14 +2442,57 @@ end subroutine update_info
       write(self%ifile, '(I0,x,G0.12,99(x,I0))') order(ib), var, ctx%nnear(1:self%ngroups)
       write(self%ifile, '(*(:2x,I0))')   (ctx%inear(1:ctx%nnear(ii), ii),  ii = 1, self%ngroups)
       write(self%ifile, '(*(:2x,F0.10))')(ctx%weight(1:ctx%nnear(ii), ii), ii = 1, self%ngroups)
+      if (self%nvar > 1 .and. self%nsim > 0) then
+        do kvar = 1, self%nvar
+          write(self%ifile, '(*(:2x,G0.17))') ctx%x(kvar, 1:ctx%matsize)
+        end do
+      end if
     end associate
   end subroutine write_weight
+
+
+  !============================================================================
+  ! write_weight_store
+  !
+  ! Write the complete in-memory weight store to weight_file in one pass after
+  ! solve() completes.  Format is identical to the per-block write_weight
+  ! output, so read_weight (use_old_weight path) can re-load it unchanged.
+  !
+  ! Three lines per block, with nvar extra x rows for joint SGSIM:
+  !   Line 1: original_block_index  kriging_variance  nnear(1:ngroups)
+  !   Line 2: inear indices, flat (all groups concatenated)
+  !   Line 3: primary-variable kriging weights, flat
+  !============================================================================
+  subroutine write_weight_store(self)
+    class(t_kriging) :: self
+    integer          :: ib, ii, ivar, ifile, kvar, matsize
+
+    associate(ws => self%wstore)
+      open(newunit=ifile, file=trim(self%weight_file), status='replace')
+      write(ifile, *) self%block%n, self%nvar, (self%obs(ivar)%nmax, ivar=1, self%nvar)
+      do ib = 1, self%block%n
+        write(ifile, '(I0,x,G0.12,99(x,I0))') self%block%order(ib), &
+          self%block%variance(ib), ws%nnear(1:self%ngroups, ib)
+        write(ifile, '(*(:2x,I0))') &
+          (ws%inear (1:ws%nnear(ii,ib), ii, ib), ii = 1, self%ngroups)
+        write(ifile, '(*(:2x,F0.10))') &
+          (ws%weight(1:ws%nnear(ii,ib), ii, ib), ii = 1, self%ngroups)
+        if (allocated(ws%x)) then
+          matsize = sum(ws%nnear(1:self%ngroups, ib)) + self%unbias + self%ndrift
+          do kvar = 1, ws%q
+            write(ifile, '(*(:2x,G0.17))') ws%x(kvar, 1:matsize, ib)
+          end do
+        end if
+      end do
+      close(ifile)
+    end associate
+  end subroutine write_weight_store
 
 
   subroutine read_weight(self, ctx)
     class(t_kriging)     :: self
     class(t_kriging_ctx) :: ctx
-    integer              :: ii
+    integer              :: ii, kvar
     associate( &
       ib    => ctx%iblock, &
       order => self%block%order, &
@@ -2415,6 +2500,14 @@ end subroutine update_info
       read(self%ifile, *) order(ib), var, ctx%nnear(1:self%ngroups)
       read(self%ifile, *) (ctx%inear(1:ctx%nnear(ii), ii),  ii = 1, self%ngroups)
       read(self%ifile, *) (ctx%weight(1:ctx%nnear(ii), ii), ii = 1, self%ngroups)
+      ctx%npp = sum(ctx%nnear)
+      ctx%matsize = ctx%npp + self%unbias + self%ndrift
+      if (self%nvar > 1 .and. self%nsim > 0) then
+        ctx%x = 0.0
+        do kvar = 1, self%nvar
+          read(self%ifile, *) ctx%x(kvar, 1:ctx%matsize)
+        end do
+      end if
     end associate
   end subroutine read_weight
 
@@ -2548,7 +2641,92 @@ end subroutine update_info
     if (associated(self%block))      deallocate(self%block)
     if (associated(self%vgm))        deallocate(self%vgm)
     if (associated(self%krige_info)) deallocate(self%krige_info)
+    if (allocated(self%wstore))      deallocate(self%wstore)
   end subroutine finalize
+
+
+  !============================================================================
+  ! alloc_weight_store
+  !
+  ! Allocate the in-memory weight store sized for the current problem.
+  ! Must be called after set_grid() and set_search() (so that block%n and
+  ! obs%nmax are set), and before solve().  Calling again replaces the store.
+  !============================================================================
+  subroutine alloc_weight_store(self)
+    class(t_kriging) :: self
+    integer :: nb, ng, nm, q
+    character(len=*), parameter :: subname = "t_kriging%alloc_weight_store"
+
+    if (.not. associated(self%block) .or. self%block%n == 0) then
+      call kriging_error(subname, 'call set_grid() before alloc_weight_store()')
+      return
+    end if
+    if (self%ngroups == 0) then
+      call kriging_error(subname, 'call initialize() before alloc_weight_store()')
+      return
+    end if
+
+    nb = self%block%n
+    ng = self%ngroups
+    nm = maxval(self%obs(1:self%nvar)%nmax)
+    if (nm <= 0) then
+      call kriging_error(subname, 'call set_search() before alloc_weight_store() so nmax is set')
+      return
+    end if
+
+    if (allocated(self%wstore)) deallocate(self%wstore)
+    allocate(self%wstore)
+    self%wstore%nblock  = nb
+    self%wstore%ngroups = ng
+    self%wstore%nmax    = nm
+    allocate(self%wstore%nnear (ng, nb));       self%wstore%nnear  = 0
+    allocate(self%wstore%inear (nm, ng, nb));   self%wstore%inear  = 0
+    allocate(self%wstore%weight(nm, ng, nb));   self%wstore%weight = 0.0
+    if (self%nvar > 1 .and. self%nsim > 0) then
+      q = self%nvar
+      self%wstore%q = q
+      self%wstore%matsize_max = self%matsize_max
+      allocate(self%wstore%x(q, self%matsize_max, nb))
+      self%wstore%x = 0.0
+    end if
+  end subroutine alloc_weight_store
+
+
+  !============================================================================
+  ! free_weight_store
+  !
+  ! Release the in-memory weight store.
+  !============================================================================
+  subroutine free_weight_store(self)
+    class(t_kriging) :: self
+    if (allocated(self%wstore)) deallocate(self%wstore)
+  end subroutine free_weight_store
+
+
+  !============================================================================
+  ! save_block_weights
+  !
+  ! Copy ctx%nnear / ctx%inear / ctx%weight for the current block into the
+  ! weight store.  Called from solve() after assign_weight.
+  ! Writes to disjoint ib-slices — safe under OpenMP without a critical section.
+  !============================================================================
+  subroutine save_block_weights(self, ctx)
+    class(t_kriging)     :: self
+    class(t_kriging_ctx) :: ctx
+    integer :: ig, nn
+
+    associate(ib => ctx%iblock, ws => self%wstore)
+      do ig = 1, self%ngroups
+        nn = ctx%nnear(ig)
+        ws%nnear(ig, ib) = nn
+        if (nn > 0) then
+          ws%inear (1:nn, ig, ib) = ctx%inear (1:nn, ig)
+          ws%weight(1:nn, ig, ib) = ctx%weight(1:nn, ig)
+        end if
+      end do
+      if (allocated(ws%x)) ws%x(1:ws%q, 1:ctx%matsize, ib) = ctx%x(1:ws%q, 1:ctx%matsize)
+    end associate
+  end subroutine save_block_weights
 
 
   !============================================================================

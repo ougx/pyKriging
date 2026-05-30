@@ -25,6 +25,7 @@ The test suite is divided into specific modules covering different geostatistica
 | Test File | Coverage & Features |
 | --- | --- |
 | **`test_api.py`** | Input validation, edge cases, error handling, bounds clipping, universal kriging (drift), and memory safety during object reuse. |
+| **`test_weight_store.py`** | In-memory weight store: array shapes/dtypes, weight correctness (sum-to-1, estimate reconstruction), factor-file round-trip, and error handling. |
 | **`test_ordinary_kriging.py`** | Core 2D ordinary kriging functionality, testing both the `Kriging` class and the `ordinary_kriging` convenience function. |
 | **`test_bk.py`** | Block kriging integration, Gaussian quadrature, block variance regularization, and per-block properties. |
 | **`test_cokriging.py`** | Ordinary co-kriging (Primary/Secondary variables) using the Walker Lake dataset and validating the Linear Model of Coregionalization (LMC). |
@@ -85,7 +86,6 @@ pytest tests/test_api.py::TestInputValidation
 * `test_set_search_before_obs_raises_runtime_error`: Verifies that configuring search parameters before observations fails gracefully.
 * `test_solve_without_search_raises_runtime_error`: Ensures `solve()` cannot be called without configuring search parameters first.
 * `test_obs_drift_before_obs_raises_runtime_error`: Ensures universal drift setup fails if observations haven't been loaded.
-* `test_weight_file_roundtrip_matches_normal_solve`: Confirms that saving and reloading kriging weights yields perfectly identical estimates.
 * `test_write_mat_with_openmp_writes_debug_files`: Checks that debug matrices are correctly written to disk safely under OpenMP execution.
 * `test_simple_kriging_with_sk_mean`: Validates that simple kriging configured with a known mean computes correctly.
 * `test_bounds_clip_upper`: Ensures the upper bound clipping parameter strictly restricts maximum estimates.
@@ -283,3 +283,28 @@ pytest tests/test_api.py::TestInputValidation
 * `test_exact_match_among_non_exact_nodes`: Verifies internal interpolators handle layered exactly-matched and inter-point nodes natively and accurately.
 * `test_exact_match_with_nugget_variogram`: Confirms exact match behavior explicitly overrides generalized nugget behavior isolated at specific evaluation nodes.
 * `test_synthetic_exact_match_all_obs`: Validates entire field sets match perfectly if generated grid coordinates explicitly copy observation coordinates.
+
+### `test_weight_store.py`
+
+* `test_nnear_shape`: Asserts `nnear` has shape `(nblock, ngroups)` after a `store_weight=True` solve.
+* `test_inear_shape`: Asserts `inear` has shape `(nblock, ngroups, nmax)`.
+* `test_weight_shape`: Asserts `weight` has shape `(nblock, ngroups, nmax)`.
+* `test_dtypes`: Confirms `nnear`/`inear` are `int32` and `weight` is `float64`.
+* `test_ngroups_kriging`: Checks `ngroups == nvar` (== 1) for ordinary kriging without simulation.
+* `test_ngroups_sgsim`: Checks `ngroups == 2*nvar` (== 2) for SGSIM, covering the obs and sim-block groups.
+* `test_nnear_in_range`: Verifies every `nnear` value lies in `[0, nmax]`.
+* `test_inear_valid_indices`: Confirms all active (non-zero) `inear` entries are valid 1-based observation indices.
+* `test_unused_slots_are_zero`: Ensures padding slots beyond `nnear[ib, ig]` are zero in both `inear` and `weight`.
+* `test_ok_weights_sum_to_one`: For ordinary kriging, checks that obs weights sum to exactly 1 at every block.
+* `test_estimate_consistency`: Reconstructs the estimate from stored weights and confirms it matches `get_results()`.
+* `test_weights_unchanged_by_get_weights`: Confirms that calling `get_weights()` twice returns identical arrays.
+* `test_file_written`: Verifies a factor file is created on disk when `weight_file` is provided.
+* `test_reuse_gives_same_estimates`: Confirms `use_old_weight=True` reproduces estimates and variances from the original `store_weight=True` run.
+* `test_roundtrip_matches_plain_solve`: Verifies that the full round-trip (plain solve → store → reload) gives bit-identical estimates. *(Moved from `test_api.py::TestOperationalModes`.)*
+* `test_memory_only_matches_plain_solve`: Confirms that `store_weight=True` without a `weight_file` gives bit-identical estimates to a plain solve (verifying the weight store does not perturb the solver).
+* `test_memory_only_no_file_created`: Confirms that omitting `weight_file` keeps weights in memory only and writes no file.
+* `test_get_weights_without_store_weight_raises`: Checks that `get_weights()` raises `RuntimeError` when the store was never allocated.
+* `test_free_then_get_raises`: Checks that `get_weights()` raises `RuntimeError` after `free_weight_store()` is called.
+* `test_use_old_weight_reproduces_all_realizations`: Joint co-simulation with explicit path/samples: `use_old_weight` reproduces the complete `(nsim, nblock, nvar)` result.
+* `test_use_old_weight_same_seed_reproduces_all_realizations`: Joint co-simulation with auto-generated path/samples: the same integer seed ensures the Fortran RNG produces identical samples in both runs, so `use_old_weight` gives bit-identical realizations.
+* `test_different_seed_gives_different_realizations`: Sanity check that different seeds produce different co-simulation realizations.

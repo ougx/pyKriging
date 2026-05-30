@@ -700,6 +700,111 @@ contains
     ierr = int(kriging_ierr(), c_int)
   end function krige_get_variance
 
+  !=============================================================================
+  ! Weight-store API
+  !=============================================================================
+
+  !-- Allocate the in-memory weight store.
+  !   Call after set_grid() + set_search(), before solve().
+  integer(c_int) function krige_alloc_weight_store(handle) &
+      bind(C, name='krige_alloc_weight_store') result(ierr)
+    integer(c_intptr_t), intent(in), value :: handle
+    type(t_kriging), pointer :: obj
+    call kriging_clear_error()
+    call get_obj(handle, obj)
+    if (kriging_failed()) then; ierr = int(kriging_ierr(), c_int); return; end if
+    call obj%alloc_weight_store()
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_alloc_weight_store
+
+  !-- Free the in-memory weight store.
+  integer(c_int) function krige_free_weight_store(handle) &
+      bind(C, name='krige_free_weight_store') result(ierr)
+    integer(c_intptr_t), intent(in), value :: handle
+    type(t_kriging), pointer :: obj
+    call kriging_clear_error()
+    call get_obj(handle, obj)
+    if (kriging_failed()) then; ierr = int(kriging_ierr(), c_int); return; end if
+    call obj%free_weight_store()
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_free_weight_store
+
+  !-- Query weight store dimensions: nblock, ngroups, nmax.
+  !   Returns an error if the store has not been allocated.
+  integer(c_int) function krige_get_weight_dims(handle, nblock, ngroups, nmax) &
+      bind(C, name='krige_get_weight_dims') result(ierr)
+    integer(c_intptr_t), intent(in), value :: handle
+    integer(c_int),      intent(out)       :: nblock, ngroups, nmax
+    type(t_kriging), pointer :: obj
+    call kriging_clear_error()
+    nblock = 0_c_int;  ngroups = 0_c_int;  nmax = 0_c_int
+    call get_obj(handle, obj)
+    if (kriging_failed()) then; ierr = int(kriging_ierr(), c_int); return; end if
+    if (.not. allocated(obj%wstore)) then
+      call kriging_error('krige_get_weight_dims', &
+        'Weight store not allocated; call alloc_weight_store() before solve()')
+      ierr = int(kriging_ierr(), c_int); return
+    end if
+    nblock  = int(obj%wstore%nblock,  c_int)
+    ngroups = int(obj%wstore%ngroups, c_int)
+    nmax    = int(obj%wstore%nmax,    c_int)
+    ierr    = int(kriging_ierr(), c_int)
+  end function krige_get_weight_dims
+
+  !-- Copy nnear[ngroups, nblock] into the caller-allocated integer buffer.
+  integer(c_int) function krige_get_weight_nnear(handle, ngroups_c, nblock_c, out) &
+      bind(C, name='krige_get_weight_nnear') result(ierr)
+    integer(c_intptr_t), intent(in), value :: handle
+    integer(c_int),      intent(in), value :: ngroups_c, nblock_c
+    integer(c_int),      intent(out)       :: out(ngroups_c, nblock_c)
+    type(t_kriging), pointer :: obj
+    call kriging_clear_error()
+    call get_obj(handle, obj)
+    if (kriging_failed()) then; ierr = int(kriging_ierr(), c_int); return; end if
+    if (.not. allocated(obj%wstore)) then
+      call kriging_error('krige_get_weight_nnear', 'Weight store not allocated')
+      ierr = int(kriging_ierr(), c_int); return
+    end if
+    out = int(obj%wstore%nnear(1:ngroups_c, 1:nblock_c), c_int)
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_get_weight_nnear
+
+  !-- Copy inear[nmax, ngroups, nblock] into the caller-allocated integer buffer.
+  integer(c_int) function krige_get_weight_inear(handle, nmax_c, ngroups_c, nblock_c, out) &
+      bind(C, name='krige_get_weight_inear') result(ierr)
+    integer(c_intptr_t), intent(in), value :: handle
+    integer(c_int),      intent(in), value :: nmax_c, ngroups_c, nblock_c
+    integer(c_int),      intent(out)       :: out(nmax_c, ngroups_c, nblock_c)
+    type(t_kriging), pointer :: obj
+    call kriging_clear_error()
+    call get_obj(handle, obj)
+    if (kriging_failed()) then; ierr = int(kriging_ierr(), c_int); return; end if
+    if (.not. allocated(obj%wstore)) then
+      call kriging_error('krige_get_weight_inear', 'Weight store not allocated')
+      ierr = int(kriging_ierr(), c_int); return
+    end if
+    out = int(obj%wstore%inear(1:nmax_c, 1:ngroups_c, 1:nblock_c), c_int)
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_get_weight_inear
+
+  !-- Copy weight[nmax, ngroups, nblock] into the caller-allocated double buffer.
+  integer(c_int) function krige_get_weight_data(handle, nmax_c, ngroups_c, nblock_c, out) &
+      bind(C, name='krige_get_weight_data') result(ierr)
+    integer(c_intptr_t), intent(in), value :: handle
+    integer(c_int),      intent(in), value :: nmax_c, ngroups_c, nblock_c
+    real(c_double),      intent(out)       :: out(nmax_c, ngroups_c, nblock_c)
+    type(t_kriging), pointer :: obj
+    call kriging_clear_error()
+    call get_obj(handle, obj)
+    if (kriging_failed()) then; ierr = int(kriging_ierr(), c_int); return; end if
+    if (.not. allocated(obj%wstore)) then
+      call kriging_error('krige_get_weight_data', 'Weight store not allocated')
+      ierr = int(kriging_ierr(), c_int); return
+    end if
+    out = real(obj%wstore%weight(1:nmax_c, 1:ngroups_c, 1:nblock_c), c_double)
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_get_weight_data
+
   integer(c_int) function krige_get_last_error(buffer, nbuf) &
       bind(C, name='krige_get_last_error') result(ierr)
     character(kind=c_char), intent(out) :: buffer(*)
