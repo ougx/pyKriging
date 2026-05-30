@@ -643,7 +643,7 @@ contains
     ierr = int(kriging_ierr(), c_int)
   end function krige_get_nsim
 
-  !-- Copy estimate(1:nsim_c, 1:nblocks) into the caller-allocated out array.
+  !-- Copy primary estimate(1:nsim_c, 1:nblocks, 1) into the caller-allocated out array.
   integer(c_int) function krige_get_estimate(handle, nsim_c, nblocks, out) &
       bind(C, name='krige_get_estimate') result(ierr)
     integer(c_intptr_t), intent(in), value :: handle
@@ -656,9 +656,32 @@ contains
       ierr = int(kriging_ierr(), c_int)
       return
     end if
-    out = real(obj%block%estimate(1:nsim_c, 1:nblocks), c_double)
+    out = real(obj%block%estimate(1:nsim_c, 1:nblocks, 1), c_double)
     ierr = int(kriging_ierr(), c_int)
   end function krige_get_estimate
+
+  !-- Copy estimate(1:nsim_c, 1:nblocks, 1:nvar_c) for joint co-sim.
+  !   estimate(isim, ib, kvar) = simulated value of variable kvar in
+  !   realization isim at block ib.
+  integer(c_int) function krige_get_estimate_all(handle, nsim_c, nvar_c, nblocks, out) &
+      bind(C, name='krige_get_estimate_all') result(ierr)
+    integer(c_intptr_t), intent(in), value :: handle
+    integer(c_int),      intent(in), value :: nsim_c, nvar_c, nblocks
+    real(c_double),      intent(out) :: out(nsim_c, nblocks, nvar_c)
+    type(t_kriging), pointer :: obj
+    call kriging_clear_error()
+    call get_obj(handle, obj)
+    if (kriging_failed()) then
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
+    if (.not. allocated(obj%block%estimate)) then
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
+    out = real(obj%block%estimate(1:nsim_c, 1:nblocks, 1:nvar_c), c_double)
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_get_estimate_all
 
   !-- Copy variance(1:nblocks) into the caller-allocated out array.
   integer(c_int) function krige_get_variance(handle, nblocks, out) &
@@ -686,19 +709,18 @@ contains
   end function krige_get_last_error
 
   !-- Return a string representation of the kriging object.
-  function krige_to_str(handle) result(ptr) bind(C, name='krige_to_str')
+  integer(c_intptr_t) function krige_to_str(handle) result(ptr) bind(C, name='krige_to_str')
     integer(c_intptr_t), intent(in), value :: handle
-    type(c_ptr) :: ptr
     type(t_kriging), pointer :: obj
     call kriging_clear_error()
     call get_obj(handle, obj)
     if (kriging_failed()) then
-      ptr = c_null_ptr
+      ptr = 0_c_intptr_t
       return
     end if
     call obj%update_info()
-    ptr = c_loc(obj%krige_info(1))
-  end function
+    ptr = transfer(c_loc(obj%krige_info(1)), ptr)
+  end function krige_to_str
 
   !=============================================================================
   ! Internal helpers (private to this module)

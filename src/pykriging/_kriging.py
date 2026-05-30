@@ -185,8 +185,9 @@ _krige_solve       = _status_cfun("krige_solve",       [ctypes.c_int64])
 # _krige_print       = _cfun("krige_print",       [ctypes.c_int64])
 _krige_get_nblocks = _status_cfun("krige_get_nblocks", [ctypes.c_int64, _ptr_int])
 _krige_get_nsim    = _status_cfun("krige_get_nsim",    [ctypes.c_int64, _ptr_int])
-_krige_get_estimate= _status_cfun("krige_get_estimate",[ctypes.c_int64, _c_int, _c_int, _ptr_dbl])
-_krige_get_variance= _status_cfun("krige_get_variance",[ctypes.c_int64, _c_int, _ptr_dbl])
+_krige_get_estimate    = _status_cfun("krige_get_estimate",    [ctypes.c_int64, _c_int, _c_int, _ptr_dbl])
+_krige_get_estimate_all= _status_cfun("krige_get_estimate_all",[ctypes.c_int64, _c_int, _c_int, _c_int, _ptr_dbl])
+_krige_get_variance    = _status_cfun("krige_get_variance",    [ctypes.c_int64, _c_int, _ptr_dbl])
 _krige_get_last_error = _cfun("krige_get_last_error", [_ptr_char, _c_int], _c_int)
 
 _krige_to_str      = _cfun("krige_to_str"   , [ctypes.c_int64], _ptr_void)
@@ -243,6 +244,10 @@ def get_omp_info():
 def _farray(a, dtype=np.float64):
     """Return a Fortran-contiguous array of the given dtype."""
     return np.asfortranarray(a, dtype=dtype)
+
+def _fempty(shape, dtype=np.float64):
+    """Allocate a Fortran-contiguous output array directly."""
+    return np.empty(shape, dtype=dtype, order="F")
 
 def _coord_to_fortran(coord: np.ndarray) -> np.ndarray:
     """
@@ -952,15 +957,26 @@ class Kriging:
         _krige_solve(_h(self._handle))
 
     # ------------------------------------------------------------------
-    def get_results(self):
+    def get_results(self, copy: bool = False, squeeze: bool = True):
         """
         Retrieve the kriging estimates and variances after :meth:`solve`.
+
+        Fortran fills ``estimate(nsim, nblocks)`` directly into a
+        Fortran-contiguous Python-owned buffer.
+
+        Parameters
+        ----------
+        copy : bool, default False
+            If True, return C-contiguous copies for downstream NumPy/Pandas use.
+            If False, return views / Fortran-order arrays when possible.
+        squeeze : bool, default True
+            If True, return a 1-D estimate when ``nsim == 1``.
 
         Returns
         -------
         estimate : ndarray
-            Shape **(ngrid,)** for ordinary kriging; shape
-            **(nsim, ngrid)** for SGSIM.
+            Shape **(ngrid,)** when ``nsim == 1 and squeeze``; otherwise shape
+            **(nsim, ngrid)**.
         variance : ndarray, shape (nblocks,)
             Kriging variance at each block.
 
@@ -978,16 +994,58 @@ class Kriging:
         nb = n_blocks.value
         ns = n_sim.value
 
-        estimate = _farray(np.empty((ns, nb), dtype=np.float64))
-        variance = _farray(np.empty(nb,       dtype=np.float64))
+        estimate = _fempty((ns, nb), dtype=np.float64)
+        variance = _fempty(nb, dtype=np.float64)
 
         _krige_get_estimate(_h(self._handle), _c_int(ns), _c_int(nb), _dptr(estimate))
         _krige_get_variance(_h(self._handle), _c_int(nb),              _dptr(variance))
 
-        # Return (ngrid,) for kriging (ns==1) or (nsim, ngrid) for SGSIM
-        if ns == 1:
-            return estimate[0].copy(), variance
-        return estimate.copy(), variance
+        if squeeze and ns == 1:
+            est = estimate[0]
+        else:
+            est = estimate
+
+        if copy:
+            est = np.array(est, order="C", copy=True)
+            variance = np.array(variance, order="C", copy=True)
+
+        return est, variance
+
+    def get_estimate_all(self, copy: bool = False):
+        """Return joint co-simulation results for all variables.
+
+        Only populated when ``nvar > 1`` and ``nsim > 0`` (joint co-simulation).
+
+        Parameters
+        ----------
+        copy : bool, default False
+            If True, return a C-contiguous copy. If False, return the
+            Fortran-contiguous output buffer filled by the Fortran core.
+
+        Returns
+        -------
+        np.ndarray, shape (nsim, nblock, nvar)
+            Simulated values of all variables.  ``out[isim, ib, kvar]`` is the
+            value in realization ``isim+1`` at block ``ib`` for variable ``kvar+1``.
+        """
+        if self.nvar <= 1 or self.nsim <= 0:
+            raise RuntimeError("get_estimate_all is only available for joint co-simulation (nvar > 1 and nsim > 0)")
+
+        n_blocks = ctypes.c_int(0)
+        n_sim    = ctypes.c_int(0)
+        _krige_get_nblocks(_h(self._handle), ctypes.byref(n_blocks))
+        _krige_get_nsim   (_h(self._handle), ctypes.byref(n_sim))
+
+        nb = n_blocks.value
+        ns = n_sim.value
+        nv = self.nvar
+
+        out = _fempty((ns, nb, nv), dtype=np.float64)
+        _krige_get_estimate_all(_h(self._handle), _c_int(ns), _c_int(nv), _c_int(nb), _dptr(out))
+
+        if copy:
+            return np.array(out, order="C", copy=True)
+        return out
 
     # ------------------------------------------------------------------
     def __del__(self):

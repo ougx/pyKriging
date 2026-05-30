@@ -116,6 +116,21 @@ grid_coord = np.array([[gx1,gy1], [gx2,gy2], ...])  # shape (ngrid, ndim)
 drift      = np.array([[d1a,d1b], [d2a,d2b], ...])  # shape (nobs, ndrift)
 ```
 
+Result arrays use these shapes:
+
+| Method | Shape | Notes |
+|--------|-------|-------|
+| `get_results()` for kriging or one SGSIM realization | `(nblock,)` | Primary variable only |
+| `get_results()` for multiple SGSIM realizations | `(nsim, nblock)` | Primary variable only |
+| `get_estimate_all()` for joint co-simulation | `(nsim, nblock, nvar)` | All variables; `out[isim, iblock, ivar]` |
+
+Internally the Fortran core stores joint co-simulation results as
+`estimate(isim, iblock, ivar)`. `get_estimate_all()` returns the same dimension
+order to avoid an extra transposition/copy across the Python/Fortran boundary.
+Use `get_results(squeeze=False)` to keep the leading simulation dimension when
+`nsim == 1`, and `copy=True` when a C-contiguous copy is preferred for downstream
+NumPy/Pandas workflows.
+
 ---
 
 ## Variogram parameters

@@ -115,7 +115,7 @@ _DEF_SYMS := \
   krige_set_sim krige_set_search krige_prepare \
   krige_get_max_threads krige_get_num_threads \
   krige_solve krige_get_nblocks krige_get_nsim \
-  krige_get_estimate krige_get_variance krige_get_last_error \
+  krige_get_estimate krige_get_estimate_all krige_get_variance krige_get_last_error \
   krige_st_create krige_st_destroy krige_st_initialize \
   krige_st_set_st_model \
   krige_st_set_obs krige_st_set_obs_drift krige_st_set_vgm \

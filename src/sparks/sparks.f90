@@ -648,15 +648,16 @@ contains
       do ib2 = 1, krig%block%n
         if (loocv) then
           write (iout, "(I0,*(:,',',G0.12))") &
-            ib2, krig%block%coord(:, ib2), krig%obs(1)%value(ib2),krig%block%estimate(:, ib2), krig%block%variance(ib2)
+            ib2, krig%block%coord(:, ib2), krig%obs(1)%value(ib2), &
+            krig%block%estimate(:, ib2, 1), krig%block%variance(ib2)
         else
           write (iout, "(I0,*(:,',',G0.12))") &
-            ib2, krig%block%coord(:, ib2), krig%block%estimate(:, ib2), krig%block%variance(ib2)
+            ib2, krig%block%coord(:, ib2), krig%block%estimate(:, ib2, 1), krig%block%variance(ib2)
         end if
       end do
     else
       do ib2 = 1, krig%block%n
-        write (iout, "(*(G0.12,:,','))") krig%block%estimate(:, ib2)
+        write (iout, "(*(G0.12,:,','))") krig%block%estimate(:, ib2, 1)
       end do
     end if
 

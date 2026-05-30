@@ -109,8 +109,43 @@ class TestSGSIM:
         k.set_search(ivar=1)
         k.solve()
         sims, _ = k.get_results()
+        sims_matrix, _ = k.get_results(squeeze=False)
+        sims_copy, _ = k.get_results(copy=True)
 
         assert sims.shape == (grid_coord.shape[0],)
+        assert sims_matrix.shape == (1, grid_coord.shape[0])
+        np.testing.assert_array_equal(sims_matrix[0], sims)
+        assert sims_copy.flags.c_contiguous
         # Realisations must lie within a physically reasonable range
         assert sims.min() >= -5.0, f"Simulation minimum {sims.min()} is unreasonably low"
         assert sims.max() <=  5.0, f"Simulation maximum {sims.max()} is unreasonably high"
+
+    def test_joint_cosim_get_estimate_all_shape(self):
+        """Joint co-simulation returns simulations, blocks, then variables."""
+        coord = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
+        grid = np.array([[0.25, 0.25], [0.75, 0.25], [0.25, 0.75]])
+
+        k = Kriging(ndim=2, nvar=2, nsim=2, seed=123)
+        k.set_obs(ivar=1, coord=coord, value=np.array([1.0, 2.0, 1.5]))
+        k.set_obs(ivar=2, coord=coord, value=np.array([10.0, 20.0, 15.0]))
+        k.set_grid(coord=grid)
+        k.set_sim(
+            randpath=np.array([1, 2, 3], dtype=np.int32),
+            sample=np.ones((2, 3), order="F"),
+        )
+        k.set_search(ivar=1)
+        k.set_search(ivar=2)
+        k.set_vgm(ivar=1, jvar=1, vtype="sph", nugget=0.0, sill=1.0, a_major=1.0)
+        k.set_vgm(ivar=1, jvar=2, vtype="sph", nugget=0.0, sill=0.25, a_major=1.0)
+        k.set_vgm(ivar=2, jvar=2, vtype="sph", nugget=0.0, sill=1.0, a_major=1.0)
+
+        k.solve()
+        primary, _ = k.get_results()
+        all_est = k.get_estimate_all()
+        all_est_copy = k.get_estimate_all(copy=True)
+
+        assert all_est.shape == (2, 3, 2)
+        np.testing.assert_allclose(all_est[:, :, 0], primary)
+        assert all_est.flags.f_contiguous
+        assert all_est_copy.flags.c_contiguous
+        np.testing.assert_allclose(all_est_copy, all_est)
