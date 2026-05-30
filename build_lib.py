@@ -182,6 +182,7 @@ _CAPI_EXPORTS = [
     "krige_get_estimate",
     "krige_get_estimate_all",
     "krige_get_variance",
+    "krige_get_variance_all",
     "krige_get_last_error",
     "krige_alloc_weight_store",
     "krige_free_weight_store",

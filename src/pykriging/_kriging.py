@@ -206,6 +206,7 @@ _krige_get_nsim    = _status_cfun("krige_get_nsim",    [ctypes.c_int64, _ptr_int
 _krige_get_estimate    = _status_cfun("krige_get_estimate",    [ctypes.c_int64, _c_int, _c_int, _ptr_dbl])
 _krige_get_estimate_all= _status_cfun("krige_get_estimate_all",[ctypes.c_int64, _c_int, _c_int, _c_int, _ptr_dbl])
 _krige_get_variance    = _status_cfun("krige_get_variance",    [ctypes.c_int64, _c_int, _ptr_dbl])
+_krige_get_variance_all= _status_cfun("krige_get_variance_all",[ctypes.c_int64, _c_int, _c_int, _ptr_dbl])
 
 _krige_alloc_weight_store = _optional_status_cfun("krige_alloc_weight_store", [ctypes.c_int64])
 _krige_free_weight_store  = _optional_status_cfun("krige_free_weight_store",  [ctypes.c_int64])
@@ -1042,9 +1043,10 @@ class Kriging:
         return est, variance
 
     def get_estimate_all(self, copy: bool = False):
-        """Return joint co-simulation results for all variables.
+        """Return multivariable estimates / simulations for all variables.
 
-        Only populated when ``nvar > 1`` and ``nsim > 0`` (joint co-simulation).
+        Populated when ``nvar > 1``.  For co-kriging without simulation,
+        the leading dimension is 1.
 
         Parameters
         ----------
@@ -1054,12 +1056,12 @@ class Kriging:
 
         Returns
         -------
-        np.ndarray, shape (nsim, nblock, nvar)
-            Simulated values of all variables.  ``out[isim, ib, kvar]`` is the
-            value in realization ``isim+1`` at block ``ib`` for variable ``kvar+1``.
+        np.ndarray, shape (max(nsim, 1), nblock, nvar)
+            Values of all variables.  ``out[isim, ib, kvar]`` is the value in
+            realization ``isim+1`` at block ``ib`` for variable ``kvar+1``.
         """
-        if self.nvar <= 1 or self.nsim <= 0:
-            raise RuntimeError("get_estimate_all is only available for joint co-simulation (nvar > 1 and nsim > 0)")
+        if self.nvar <= 1:
+            raise RuntimeError("get_estimate_all is only available for multivariable kriging/simulation (nvar > 1)")
 
         n_blocks = ctypes.c_int(0)
         n_sim    = ctypes.c_int(0)
@@ -1072,6 +1074,28 @@ class Kriging:
 
         out = _fempty((ns, nb, nv), dtype=np.float64)
         _krige_get_estimate_all(_h(self._handle), _c_int(ns), _c_int(nv), _c_int(nb), _dptr(out))
+
+        if copy:
+            return np.array(out, order="C", copy=True)
+        return out
+
+    def get_variance_all(self, copy: bool = False):
+        """Return the conditional covariance matrix for all variables.
+
+        Returns
+        -------
+        np.ndarray, shape (nblock, nvar, nvar)
+            Conditional covariance matrix at each block.  The diagonal contains
+            each variable's kriging variance, and ``out[:, 0, 0]`` matches the
+            variance returned by :meth:`get_results`.
+        """
+        n_blocks = ctypes.c_int(0)
+        _krige_get_nblocks(_h(self._handle), ctypes.byref(n_blocks))
+
+        nb = n_blocks.value
+        nv = self.nvar
+        out = _fempty((nb, nv, nv), dtype=np.float64)
+        _krige_get_variance_all(_h(self._handle), _c_int(nb), _c_int(nv), _dptr(out))
 
         if copy:
             return np.array(out, order="C", copy=True)

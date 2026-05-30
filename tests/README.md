@@ -117,6 +117,7 @@ pytest tests/test_api.py::TestInputValidation
 
 * `test_lmc_validity`: Checks that the provided linear model of coregionalization (LMC) satisfies mathematical validity constraints.
 * `test_result_shapes`: Ensures co-kriging output array structures correctly match the dimensions of the estimation grid.
+* `test_estimate_all_variables_and_covariance_matrix`: Confirms co-kriging fills all target-variable estimates and returns the full `(nblock, nvar, nvar)` conditional covariance matrix.
 * `test_variance_nonnegative`: Validates that co-kriging variance is strictly non-negative.
 * `test_variance_bounded_by_total_sill`: Confirms co-kriging variance does not ever exceed the total sill of the primary variogram.
 * `test_ok_variance_bounded_by_u_total_sill`: Ensures ordinary kriging variance on a secondary variable alone respects its isolated total sill.
@@ -307,4 +308,5 @@ pytest tests/test_api.py::TestInputValidation
 * `test_free_then_get_raises`: Checks that `get_weights()` raises `RuntimeError` after `free_weight_store()` is called.
 * `test_use_old_weight_reproduces_all_realizations`: Joint co-simulation with explicit path/samples: `use_old_weight` reproduces the complete `(nsim, nblock, nvar)` result.
 * `test_use_old_weight_same_seed_reproduces_all_realizations`: Joint co-simulation with auto-generated path/samples: the same integer seed ensures the Fortran RNG produces identical samples in both runs, so `use_old_weight` gives bit-identical realizations.
+* `test_use_old_weight_reads_full_est_var_from_factor_file`: Confirms factor-file replay reads the full persisted covariance matrix rather than recomputing only diagonal variances.
 * `test_different_seed_gives_different_realizations`: Sanity check that different seeds produce different co-simulation realizations.

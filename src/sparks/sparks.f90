@@ -649,10 +649,10 @@ contains
         if (loocv) then
           write (iout, "(I0,*(:,',',G0.12))") &
             ib2, krig%block%coord(:, ib2), krig%obs(1)%value(ib2), &
-            krig%block%estimate(:, ib2, 1), krig%block%variance(ib2)
+            krig%block%estimate(:, ib2, 1), krig%block%est_var(ib2, 1, 1)
         else
           write (iout, "(I0,*(:,',',G0.12))") &
-            ib2, krig%block%coord(:, ib2), krig%block%estimate(:, ib2, 1), krig%block%variance(ib2)
+            ib2, krig%block%coord(:, ib2), krig%block%estimate(:, ib2, 1), krig%block%est_var(ib2, 1, 1)
         end if
       end do
     else

@@ -46,6 +46,7 @@
 !  and reads garbage memory or crashes.
 !==============================================================================
 module kriging_capi
+  use, intrinsic :: ieee_arithmetic
   use iso_c_binding
   use kriging, only: t_kriging
   use kriging_err, only: kriging_clear_error, kriging_ierr, kriging_copy_error, &
@@ -696,9 +697,34 @@ contains
       ierr = int(kriging_ierr(), c_int)
       return
     end if
-    out = real(obj%block%variance(1:nblocks), c_double)
+    if (allocated(obj%block%est_var)) then
+      out = real(obj%block%est_var(1:nblocks, 1, 1), c_double)
+    else
+      out = IEEE_VALUE(0.0_c_double, IEEE_QUIET_NAN)
+    end if
     ierr = int(kriging_ierr(), c_int)
   end function krige_get_variance
+
+  !-- Copy est_var(1:nblocks, 1:nvar_c, 1:nvar_c) into the caller-allocated out array.
+  integer(c_int) function krige_get_variance_all(handle, nblocks, nvar_c, out) &
+      bind(C, name='krige_get_variance_all') result(ierr)
+    integer(c_intptr_t), intent(in), value :: handle
+    integer(c_int),      intent(in), value :: nblocks, nvar_c
+    real(c_double),      intent(out) :: out(nblocks, nvar_c, nvar_c)
+    type(t_kriging), pointer :: obj
+    call kriging_clear_error()
+    call get_obj(handle, obj)
+    if (kriging_failed()) then
+      ierr = int(kriging_ierr(), c_int)
+      return
+    end if
+    if (allocated(obj%block%est_var)) then
+      out = real(obj%block%est_var(1:nblocks, 1:nvar_c, 1:nvar_c), c_double)
+    else
+      out = IEEE_VALUE(0.0_c_double, IEEE_QUIET_NAN)
+    end if
+    ierr = int(kriging_ierr(), c_int)
+  end function krige_get_variance_all
 
   !=============================================================================
   ! Weight-store API

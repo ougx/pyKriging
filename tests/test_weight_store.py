@@ -331,8 +331,8 @@ class TestWeightStoreCosim:
 
     Joint co-simulation produces a different estimate vector for every
     realization, so the round-trip check must compare the full
-    (nsim, nblock, nvar) result from get_estimate_all(), not just the
-    kriging variance.
+    (nsim, nblock, nvar) result from get_estimate_all(), plus the full
+    (nblock, nvar, nvar) conditional covariance matrix.
 
     Two scenarios are tested:
     1. Explicit path + sample arrays: fully deterministic, no RNG dependency.
@@ -391,15 +391,19 @@ class TestWeightStoreCosim:
         # Run 1: solve and write weights
         k1 = self._build(store_weight=True, weight_file=weight_file)
         all1 = k1.get_estimate_all()   # (nsim, nblock, nvar)
+        all_var1 = k1.get_variance_all()
         _, var1 = k1.get_results()
 
         # Run 2: reload weights, same fixed path + samples
         k2 = self._build(use_old_weight=True, weight_file=weight_file)
         all2 = k2.get_estimate_all()
+        all_var2 = k2.get_variance_all()
         _, var2 = k2.get_results()
 
         np.testing.assert_allclose(all2, all1, rtol=1e-10, atol=1e-10,
             err_msg="Joint co-sim: use_old_weight realizations differ from original")
+        np.testing.assert_allclose(all_var2, all_var1, rtol=1e-10, atol=1e-10,
+            err_msg="Joint co-sim: use_old_weight per-variable variances differ from original")
         np.testing.assert_allclose(var2, var1, rtol=1e-10, atol=1e-10,
             err_msg="Joint co-sim: use_old_weight variance differs from original")
 
@@ -417,17 +421,48 @@ class TestWeightStoreCosim:
         # Run 1: auto path + samples, write weights
         k1 = self._build_auto_seed(_SEED, store_weight=True, weight_file=weight_file)
         all1 = k1.get_estimate_all()
+        all_var1 = k1.get_variance_all()
         _, var1 = k1.get_results()
 
         # Run 2: same seed → same auto path + samples, reload weights
         k2 = self._build_auto_seed(_SEED, use_old_weight=True, weight_file=weight_file)
         all2 = k2.get_estimate_all()
+        all_var2 = k2.get_variance_all()
         _, var2 = k2.get_results()
 
         np.testing.assert_allclose(all2, all1, rtol=1e-10, atol=1e-10,
             err_msg="Same seed: use_old_weight realizations differ from original")
+        np.testing.assert_allclose(all_var2, all_var1, rtol=1e-10, atol=1e-10,
+            err_msg="Same seed: use_old_weight per-variable variances differ from original")
         np.testing.assert_allclose(var2, var1, rtol=1e-10, atol=1e-10,
             err_msg="Same seed: use_old_weight variance differs from original")
+
+    def test_use_old_weight_reads_full_est_var_from_factor_file(self, tmp_path):
+        """Joint co-sim replay uses persisted est_var covariance matrices."""
+        weight_file = tmp_path / "cosim_est_cov.fac"
+
+        k1 = self._build(store_weight=True, weight_file=str(weight_file))
+        all_var1 = k1.get_variance_all(copy=True)
+
+        lines = weight_file.read_text().splitlines()
+        expected = np.empty_like(all_var1)
+        cursor = 1
+        for _ in range(self._GRID.shape[0]):
+            fields = lines[cursor].split()
+            order0 = int(fields[0]) - 1
+            replacement = all_var1[order0, :, :] + np.array([[0.125, 0.01], [0.01, 0.25]])
+            fields[1:5] = [f"{value:.17g}" for value in replacement.ravel(order="F")]
+            lines[cursor] = " ".join(fields)
+            expected[order0, :, :] = replacement
+            cursor += 3 + 2
+
+        weight_file.write_text("\n".join(lines) + "\n")
+
+        k2 = self._build(use_old_weight=True, weight_file=str(weight_file))
+        all_var2 = k2.get_variance_all()
+
+        np.testing.assert_allclose(all_var2, expected, rtol=1e-10, atol=1e-10,
+            err_msg="Joint co-sim: use_old_weight did not read full est_var matrix from factor file")
 
     def test_different_seed_gives_different_realizations(self, tmp_path):
         """Sanity check: a different seed must produce different realizations."""

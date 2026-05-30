@@ -15,7 +15,7 @@
 !   call k%set_sim(...)       ! (SGSIM only) set random path and samples
 !   call k%set_search(...)    ! build k-d trees for neighbour search
 !   call k%solve()            ! run kriging or SGSIM for all blocks
-!   ! read results from k%block%estimate and k%block%variance
+  !   ! read results from k%block%estimate and k%block%variance
 !   call k%finalize()         ! release memory
 !
 ! Parallelism
@@ -62,11 +62,11 @@ module kriging
   ! without branching on the concrete type.
   !============================================================================
   type t_data
-    integer              :: n = 0        ! number of spatial nodes
-    real, allocatable    :: coord(:,:)   ! coordinates            [ndim, n]
-    real, allocatable    :: drift(:,:)   ! drift function values  [ndrift, n]
-    real, allocatable    :: value(:)     ! variable values        [n]
-    real, allocatable    :: variance(:)  ! per-node variance: obs error or kriging variance [n]
+    integer              :: n = 0            ! number of spatial nodes
+    real, allocatable    :: coord(:,:)       ! coordinates            [ndim, n]
+    real, allocatable    :: drift(:,:)       ! drift function values  [ndrift, n]
+    real, allocatable    :: value(:)         ! variable values        [n]
+    real, allocatable    :: variance(:,:,:)  ! conditional covariance [n, nvar, nvar] or [n, 1, 1] for observation error
   end type t_data
 
   !============================================================================
@@ -128,10 +128,10 @@ module kriging
     integer              :: nmax = 0           ! max neighbours used per block
     real                 :: maxdist = verylarge ! max search radius
     real                 :: rotmat(3,3)         ! anisotropy rotation matrix
-    type(kdtree2), pointer :: tree => null()   ! k-d tree for fast NN search
     logical              :: need_search = .false.      ! .true. if nmax < n
     logical              :: anisotropic_search = .false. ! search in rotated coords
     logical              :: set_search = .false. ! track if search has been set
+    type(kdtree2), pointer :: tree => null()   ! k-d tree for fast NN search
   end type t_obsgrid
 
   !============================================================================
@@ -238,6 +238,8 @@ module kriging
     procedure :: assemble_linear_system
     procedure :: solve_linear_system
     procedure :: estimate_block
+    procedure :: estimate_joint_cosim
+    procedure :: estimate_standard
     procedure :: prepare
     procedure :: solve
     procedure :: write_weight
@@ -593,13 +595,13 @@ contains
       allocate(self%block%localnugget(self%block%n))
       allocate(self%block%rangescale (self%block%n))
       allocate(self%block%estimate   (max(self%nsim, 1), self%block%n, self%nvar))
-      allocate(self%block%variance   (self%block%n))
+      allocate(self%block%variance    (self%block%n, self%nvar, self%nvar))
 
       !-- Default sequential visit order (overridden by set_sim for SGSIM)
       call set_seq(self%block%order, self%block%n)
 
       !-- Initialise outputs to NaN so unfilled blocks are detectable
-      self%block%variance = IEEE_VALUE(0.0, IEEE_QUIET_NAN)
+      self%block%variance  = IEEE_VALUE(0.0, IEEE_QUIET_NAN)
       self%block%estimate = IEEE_VALUE(0.0, IEEE_QUIET_NAN)
 
       !-- Range scale and local nugget: user-supplied or defaults
@@ -1054,12 +1056,12 @@ contains
     logical :: need_rhs
     mmax = maxval(krige%obs%nmax)   ! max neighbours across all variables
     pmax = krige%ndrift + krige%unbias
-    !-- q: number of RHS columns; nvar for joint co-sim, 1 otherwise
-    q = merge(krige%nvar, 1, krige%nvar > 1 .and. krige%nsim > 0)
+    !-- q: number of RHS columns; one target per variable for multivariable runs.
+    q = merge(krige%nvar, 1, krige%nvar > 1)
 
     associate(npp => krige%nppmax, matsize => krige%matsize_max, &
               ng  => krige%ngroups)
-      need_rhs = .not. krige%use_old_weight .or. (krige%nvar > 1 .and. krige%nsim > 0)
+      need_rhs = .not. krige%use_old_weight .or. krige%nvar > 1
 
       if (.not. krige%use_old_weight) then
         allocate(self%sqdist(mmax,    ng))
@@ -1186,6 +1188,7 @@ contains
     class(t_kriging) :: self
     ! local
     integer          :: ivar, jvar, ib, mb
+    integer          :: hdr_nblock, hdr_nvar, hdr_marker, ios
     character(len=*), parameter :: subname = "t_kriging%prepare"
 
 
@@ -1225,9 +1228,19 @@ contains
       matsize = npp + self%ndrift + self%unbias
 
       !-- Weight file: open for reading when reusing pre-computed weights.
+      self%weight_file_full_variance = .false.
       if (self%use_old_weight) then
         open(newunit=ifile, file=trim(self%weight_file), status='old')
-        read(ifile, *)   ! skip header line
+        read(ifile, *, iostat=ios) hdr_nblock, hdr_nvar, hdr_marker
+        if (ios /= 0) then
+          call kriging_error(subname, 'Failed to read weight_file header.')
+          return
+        end if
+        if (hdr_nblock /= self%block%n .or. hdr_nvar /= self%nvar) then
+          call kriging_error(subname, 'weight_file dimensions do not match this kriging object.')
+          return
+        end if
+        self%weight_file_full_variance = (hdr_marker <= -2)
       end if
 
       !-- store_weight: auto-allocate the in-memory weight store so every block
@@ -1305,7 +1318,6 @@ contains
         if (self%use_old_weight) then
           !-- Factor-file path: read pre-computed weights/solutions, skip the solve.
           call self%read_weight(ctx)
-          if (self%nvar > 1 .and. self%nsim > 0) call self%assemble_rhs(ctx)
         else
           call self%assemble_linear_system(ctx)
           if (kriging_failed()) cycle
@@ -1361,6 +1373,13 @@ contains
           do ib = 1, self%block%n
             self%block%coord(:, self%block%order(ib)) = temp(:, ib)
             self%block%estimate(:, self%block%order(ib), :) = temp_est(:, ib, :)
+          end do
+        end block
+        block
+          real, allocatable :: temp_var(:,:,:)
+          allocate(temp_var, source = self%block%variance)
+          do ib = 1, self%block%n
+            self%block%variance(self%block%order(ib), :, :) = temp_var(ib, :, :)
           end do
         end block
       end if
@@ -1798,7 +1817,7 @@ contains
         call self%search_neighbors(ivar, ctx)
 
         !-- Exact match: an observation coincides with the block centre
-        if (ivar == 1 .and. .not. (self%nvar > 1 .and. self%nsim > 0) .and. &
+        if (ivar == 1 .and. self%nvar == 1 .and. &
             minval(dist(1:ctx%nnear(ivar), ivar)) <= EPSLON) then
           npp = 1
           ctx%matsize = 1
@@ -1807,8 +1826,8 @@ contains
           ctx%inear(1, ivar) = ctx%inear(minloc(dist(1:ctx%nnear(ivar), ivar), dim=1), ivar)
           ctx%nnear(ivar) = 1
           ctx%nnear(self%nvar+1:self%ngroups) = 0  ! zero all sim groups
-          self%block%variance(ctx%iblock) = self%obs(1)%variance(ctx%inear(1, ivar)) &
-                                           + self%block%localnugget(ctx%iblock)
+          self%block%variance(ctx%iblock, 1, 1) = self%obs(1)%variance(ctx%inear(1, ivar)) &
+                                               + self%block%localnugget(ctx%iblock)
           do jvar = 2, nvar; ctx%nnear(jvar) = 0; end do
           if (self%verbose) print*, "Exact match detected at block ", ctx%iblock
           return
@@ -1888,8 +1907,8 @@ contains
     class(t_kriging)     :: self
     class(t_kriging_ctx) :: ctx
 
-    integer            :: info, i, j, k1, ivgm, p, q
-    real               :: lag(3)
+    integer            :: info, i, j, k1, ivgm, p, q, kvar, kv
+    real               :: lag(3), base_cov, cov_kl
     character(len=*), parameter :: subname = "t_kriging%solve_linear_system"
 
     lag = 0.0
@@ -1952,32 +1971,58 @@ contains
         x(1, 1:npp) = x(1, 1:npp) / sum(x(1, 1:npp))
       end if
 
-      !-- Kriging variance: sigma^2 = C(0) - lambda^T * c0
+      !-- Conditional covariance:
+      !   Sigma(k,l) = C_kl(x0,x0) - lambda_k^T * c0_l.
+      ! For a single variable this reduces to the familiar kriging variance.
       associate( &
-        vgm        => self%vgm(1, 1, ivgm), &
-        var        => self%block%variance(iblock), &
         weight     => self%grid%weight, &
         coord      => self%grid%coord, &
         nblockpnt  => self%block%nblockpnt(iblock))
 
-        if (nblockpnt == 1) then
-          !-- Point kriging: within-block variance = C(0)
-          var = vgm%cov0
-        else
-          !-- Block kriging: within-block variance = weighted sum of C(node_i, node_j)
-          var = 0.0
-          k1 = self%block%iblockpnt(iblock) - 1
-          do i = 1, nblockpnt
-            var = var + vgm%cov0 * weight(k1+i) * weight(k1+i)
-            do j = i+1, nblockpnt
-              lag(1:ndim) = coord(:, k1+i) - coord(:, k1+j)
-              var = var + vgm%cov_lag(lag) * weight(k1+i) * weight(k1+j) * 2.0
+        do kvar = 1, q
+          do kv = 1, q
+            if (nblockpnt == 1) then
+              !-- Point kriging: within-block covariance = C_kl(0)
+              base_cov = self%vgm(kvar, kv, ivgm)%cov0
+            else
+              !-- Block kriging: weighted sum of C_kl(node_i, node_j)
+              base_cov = 0.0
+              k1 = self%block%iblockpnt(iblock) - 1
+              do i = 1, nblockpnt
+                base_cov = base_cov + self%vgm(kvar, kv, ivgm)%cov0 * weight(k1+i) * weight(k1+i)
+                do j = i+1, nblockpnt
+                  lag(1:ndim) = coord(:, k1+i) - coord(:, k1+j)
+                  base_cov = base_cov + self%vgm(kvar, kv, ivgm)%cov_lag(lag) * &
+                    weight(k1+i) * weight(k1+j) * 2.0
+                end do
+              end do
+            end if
+
+            self%block%variance(iblock, kvar, kv) = &
+              base_cov - dot_product(x(kvar, 1:matsize), rhsB(kv, 1:matsize))
+          end do
+        end do
+
+        !-- Clamp diagonal and symmetrise off-diagonal entries.
+        do kvar = 1, q
+          self%block%variance(iblock, kvar, kvar) = &
+            max(self%block%variance(iblock, kvar, kvar), 0.0)
+          do kv = kvar + 1, q
+            cov_kl = 0.5 * (self%block%variance(iblock, kvar, kv) + &
+                            self%block%variance(iblock, kv, kvar))
+            self%block%variance(iblock, kvar, kv) = cov_kl
+            self%block%variance(iblock, kv, kvar) = cov_kl
+          end do
+        end do
+
+        if (q < self%nvar) then
+          do kvar = q + 1, self%nvar
+            do kv = 1, self%nvar
+              self%block%variance(iblock, kvar, kv) = IEEE_VALUE(0.0, IEEE_QUIET_NAN)
+              self%block%variance(iblock, kv, kvar) = IEEE_VALUE(0.0, IEEE_QUIET_NAN)
             end do
           end do
         end if
-
-        !-- Clamp to avoid tiny negative values from floating-point errors
-        var = max(var - dot_product(x(1, 1:matsize), rhsB(1, 1:matsize)), 0.0)
       end associate
     end associate
 #ifdef DEBUG
@@ -2046,191 +2091,229 @@ contains
     class(t_kriging)      :: self
     class(t_kriging_ctx)  :: ctx
 
-    integer           :: ivar, kvar, kv, j, jb, k, nx, nnearb, k1, isim, ivgm, ig_sim1
-    real, allocatable :: v(:), w(:)
-    real              :: avg(max(1, self%nsim)), total_weight(self%ngroups)
-    !-- Joint co-sim workspace
-    real              :: mu_scalar(self%nvar), Sigma(self%nvar, self%nvar)
-    real              :: L_chol(self%nvar, self%nvar), xi(self%nvar), val_draw
     character(len=*), parameter :: subname = "t_kriging%estimate_block"
 
-    nx = max(1, self%nsim)
-    ivgm = merge(ctx%iblock, 1, self%varying_vgm)
-
-    !=========================================================================
-    ! JOINT CO-SIMULATION PATH (nvar > 1, nsim > 0)
-    ! Compute a joint estimate and draw from N(mu_vec, Sigma) for all nvar
-    ! variables simultaneously using the full q=nvar weight matrix ctx%x.
-    !=========================================================================
     if (self%nvar > 1 .and. self%nsim > 0) then
-
-      associate( &
-        iblock  => ctx%iblock, &
-        nnear   => ctx%nnear, &
-        inear   => ctx%inear, &
-        x       => ctx%x, &
-        rhsB    => ctx%rhsB, &
-        npp     => ctx%npp, &
-        matsize => ctx%matsize, &
-        block   => self%block)
-
-        !-- Conditional covariance matrix (same for all realizations):
-        !   Sigma(k,l) = C(x0_k, x0_l) - x(k,1:matsize) . rhsB(l,1:matsize)
-        !   Uses full matsize (not just npp) to include Lagrange multiplier correction,
-        !   matching the scalar variance formula in solve_linear_system.
-        do kvar = 1, self%nvar
-          do kv = 1, self%nvar
-            Sigma(kvar, kv) = self%vgm(kvar, kv, ivgm)%cov0 &
-              - dot_product(x(kvar, 1:matsize), rhsB(kv, 1:matsize))
-          end do
-          Sigma(kvar, kvar) = max(Sigma(kvar, kvar), 0.0)
-        end do
-
-        !-- Cholesky factorization of Sigma (lower triangular, in-place)
-        L_chol = 0.0
-        do kvar = 1, self%nvar
-          do kv = 1, kvar - 1
-            L_chol(kvar, kvar) = L_chol(kvar, kvar) + L_chol(kvar, kv)**2
-          end do
-          L_chol(kvar, kvar) = sqrt(max(Sigma(kvar, kvar) - L_chol(kvar, kvar), 0.0))
-          do j = kvar + 1, self%nvar
-            do kv = 1, kvar - 1
-              L_chol(j, kvar) = L_chol(j, kvar) - L_chol(j, kv) * L_chol(kvar, kv)
-            end do
-            L_chol(j, kvar) = L_chol(j, kvar) + Sigma(j, kvar)
-            if (L_chol(kvar, kvar) > 0.0) &
-              L_chol(j, kvar) = L_chol(j, kvar) / L_chol(kvar, kvar)
-          end do
-        end do
-
-        block%variance(iblock) = Sigma(1, 1)   ! primary variance for backward compat
-
-        !-- Real-obs contribution to mean (constant across all realizations)
-        mu_scalar = 0.0
-        k1 = 0
-        do ivar = 1, self%ngroups
-          if (nnear(ivar) == 0 .or. ivar > self%nvar) then
-            k1 = k1 + nnear(ivar)   ! advance offset even if skipped
-            cycle
-          end if
-          do j = 1, nnear(ivar)
-            do kvar = 1, self%nvar
-              mu_scalar(kvar) = mu_scalar(kvar) + &
-                x(kvar, k1+j) * self%obs(group_ivar(ivar, self%nvar))%value(inear(j, ivar))
-            end do
-          end do
-          k1 = k1 + nnear(ivar)
-        end do
-        ! mu_scalar now holds the obs-only mean; saved as Sigma (reuse as temp is wrong)
-        ! Store in L_chol(1,:) temporarily? No — use a second stack variable.
-        ! Declare mu_obs as an alias: just remember mu_scalar = obs-part at this point.
-
-        !-- Per-realization loop
-        do isim = 1, nx
-          !-- Start from obs-only mean and add simulated-block conditioning (realization-specific)
-          xi = mu_scalar   ! xi temporarily holds the running mean for this isim
-          k1 = 0
-          do ivar = 1, self%ngroups
-            if (nnear(ivar) == 0) then; cycle; end if
-            if (ivar > self%nvar) then
-              kv = group_ivar(ivar, self%nvar)
-              do j = 1, nnear(ivar)
-                jb = inear(j, ivar)
-                do kvar = 1, self%nvar
-                  xi(kvar) = xi(kvar) + x(kvar, k1+j) * block%estimate(isim, jb, kv)
-                end do
-              end do
-            end if
-            k1 = k1 + nnear(ivar)
-          end do
-          ! xi = complete conditional mean for this realization
-
-          !-- Joint Cholesky draw: z(kvar) = xi(kvar) + sum_l L(kvar,l) * epsilon(l)
-          !   Overwrite xi(1) with the pre-drawn sample; generate xi(2..nvar) fresh.
-          !   Save the mean first.
-          Sigma(:, 1) = xi   ! borrow first column of Sigma (recomputed per isim? No — fixed)
-          ! Actually Sigma is no longer needed after the Cholesky; safe to borrow a column.
-
-          xi(1) = block%sample(isim, iblock)
-          if (self%nvar > 1) call r8vec_normal_01(self%nvar - 1, xi(2:self%nvar))
-          do kvar = 1, self%nvar
-            val_draw = Sigma(kvar, 1)   ! conditional mean stored above
-            do kv = 1, kvar
-              val_draw = val_draw + L_chol(kvar, kv) * xi(kv)
-            end do
-            val_draw = max(self%bounds(1), min(self%bounds(2), val_draw))
-            block%estimate(isim, iblock, kvar) = val_draw
-          end do
-        end do
-
-      end associate
-      return   ! joint path complete
+      call self%estimate_joint_cosim(ctx)
+    else
+      call self%estimate_standard(ctx)
     end if
-
-    !=========================================================================
-    ! STANDARD PATH: scalar SGSIM (nvar=1) or ordinary / co-kriging (nsim=0)
-    !=========================================================================
-    associate( &
-      var    => self%block%variance(   ctx%iblock), &
-      val    => self%block%estimate(:, ctx%iblock, 1), &
-      nnear  => ctx%nnear, &
-      inear  => ctx%inear, &
-      weight => ctx%weight)
-
-      ig_sim1 = self%nvar + 1   ! sim group for variable 1 (valid only when nsim > 0)
-      val = 0.0
-      avg = 0.0
-      total_weight = 0.0
-
-      !-- SGSIM: add weighted contributions from previously simulated blocks
-      if (self%nsim > 0) then
-        do k = 1, nnear(ig_sim1)
-          val = val + self%block%estimate(:, inear(k, ig_sim1), 1) * weight(k, ig_sim1)
-          avg = avg + self%block%estimate(:, inear(k, ig_sim1), 1)
-        end do
-        total_weight(ig_sim1) = sum(weight(1:nnear(ig_sim1), ig_sim1))
-        nnearb = nnear(ig_sim1)
-      else
-        nnearb = 0
-      end if
-
-      !-- Co-kriging: compute local mean of primary for the ISAAKS correction
-      if (self%nvar > 1) then
-        avg = avg + self%obs(1)%value(inear(1:nnear(1), 1))
-        avg = avg / (nnearb + nnear(1))
-      end if
-
-      !-- Add weighted observation contributions for each variable
-      do ivar = 1, self%nvar
-        if (nnear(ivar) == 0) then
-          total_weight(ivar) = 0.0
-          cycle
-        end if
-        v = self%obs(ivar)%value(inear(1:nnear(ivar), ivar))
-        w =                      weight(1:nnear(ivar), ivar)
-        val = val + dot_product(w, v)
-        total_weight(ivar) = sum(w)
-        !-- ISAAKS & SRIVASTAVA co-kriging correction (secondary variable, OK only)
-        if (self%unbias /= 0 .and. ivar > 1) &
-          val = val + total_weight(ivar) * (avg - sum(v)/nnear(ivar))
-      end do
-
-      !-- Simple kriging mean correction
-      if (self%unbias == 0 .and. self%sk_mean /= 0.0) &
-        val = val + (1.0 - sum(total_weight)) * self%sk_mean
-
-      !-- SGSIM stochastic perturbation
-      if (self%nsim > 0) &
-        val = val + sqrt(var) * self%block%sample(:, ctx%iblock)
-
-      !-- Clamp to bounds
-      where(val < self%bounds(1)) val = self%bounds(1)
-      where(val > self%bounds(2)) val = self%bounds(2)
-    end associate
 #ifdef DEBUG
     print *, subname, " Finished. ", ctx%iblock
 #endif
   end subroutine estimate_block
+
+
+  !============================================================================
+  ! estimate_joint_cosim
+  !
+  ! Joint SGSIM path for nvar > 1 and nsim > 0.  Uses the full multi-RHS
+  ! solution x(kvar,:) to compute a conditional covariance matrix and draw all
+  ! variables together.
+  !============================================================================
+  subroutine estimate_joint_cosim(self, ctx)
+    implicit none
+    class(t_kriging)      :: self
+    class(t_kriging_ctx)  :: ctx
+
+    integer :: ivar, kvar, kv, j, jb, k1, isim, nx
+    real    :: mu_scalar(self%nvar), Sigma(self%nvar, self%nvar)
+    real    :: L_chol(self%nvar, self%nvar), xi(self%nvar), val_draw
+
+    nx = max(1, self%nsim)
+
+    associate( &
+      iblock  => ctx%iblock, &
+      nnear   => ctx%nnear, &
+      inear   => ctx%inear, &
+      x       => ctx%x, &
+      matsize => ctx%matsize, &
+      block   => self%block)
+
+      !-- Conditional covariance matrix (same for all realizations).  It is
+      !   computed during solve_linear_system or read from the factor file.
+      do kvar = 1, self%nvar
+        do kv = 1, self%nvar
+          Sigma(kvar, kv) = block%variance(iblock, kvar, kv)
+        end do
+      end do
+
+      !-- Cholesky factorization of Sigma (lower triangular, in-place)
+      L_chol = 0.0
+      do kvar = 1, self%nvar
+        do kv = 1, kvar - 1
+          L_chol(kvar, kvar) = L_chol(kvar, kvar) + L_chol(kvar, kv)**2
+        end do
+        L_chol(kvar, kvar) = sqrt(max(Sigma(kvar, kvar) - L_chol(kvar, kvar), 0.0))
+        do j = kvar + 1, self%nvar
+          do kv = 1, kvar - 1
+            L_chol(j, kvar) = L_chol(j, kvar) - L_chol(j, kv) * L_chol(kvar, kv)
+          end do
+          L_chol(j, kvar) = L_chol(j, kvar) + Sigma(j, kvar)
+          if (L_chol(kvar, kvar) > 0.0) &
+            L_chol(j, kvar) = L_chol(j, kvar) / L_chol(kvar, kvar)
+        end do
+      end do
+
+      !-- Real-obs contribution to mean (constant across all realizations)
+      mu_scalar = 0.0
+      k1 = 0
+      do ivar = 1, self%ngroups
+        if (nnear(ivar) == 0 .or. ivar > self%nvar) then
+          k1 = k1 + nnear(ivar)
+          cycle
+        end if
+        do j = 1, nnear(ivar)
+          do kvar = 1, self%nvar
+            mu_scalar(kvar) = mu_scalar(kvar) + &
+              x(kvar, k1+j) * self%obs(group_ivar(ivar, self%nvar))%value(inear(j, ivar))
+          end do
+        end do
+        k1 = k1 + nnear(ivar)
+      end do
+
+      !-- Per-realization loop
+      do isim = 1, nx
+        !-- Start from obs-only mean and add simulated-block conditioning.
+        xi = mu_scalar
+        k1 = 0
+        do ivar = 1, self%ngroups
+          if (nnear(ivar) == 0) cycle
+          if (ivar > self%nvar) then
+            kv = group_ivar(ivar, self%nvar)
+            do j = 1, nnear(ivar)
+              jb = inear(j, ivar)
+              do kvar = 1, self%nvar
+                xi(kvar) = xi(kvar) + x(kvar, k1+j) * block%estimate(isim, jb, kv)
+              end do
+            end do
+          end if
+          k1 = k1 + nnear(ivar)
+        end do
+
+        !-- Joint Cholesky draw: z(kvar) = mean(kvar) + sum_l L(kvar,l)*epsilon(l).
+        Sigma(:, 1) = xi
+        xi(1) = block%sample(isim, iblock)
+        if (self%nvar > 1) call r8vec_normal_01(self%nvar - 1, xi(2:self%nvar))
+        do kvar = 1, self%nvar
+          val_draw = Sigma(kvar, 1)
+          do kv = 1, kvar
+            val_draw = val_draw + L_chol(kvar, kv) * xi(kv)
+          end do
+          val_draw = max(self%bounds(1), min(self%bounds(2), val_draw))
+          block%estimate(isim, iblock, kvar) = val_draw
+        end do
+      end do
+
+    end associate
+  end subroutine estimate_joint_cosim
+
+
+  !============================================================================
+  ! estimate_standard
+  !
+  ! Scalar SGSIM and ordinary/co-kriging path.  Uses primary-variable weights
+  ! in ctx%weight and, for scalar SGSIM, applies the scalar simulation sample.
+  !============================================================================
+  subroutine estimate_standard(self, ctx)
+    implicit none
+    class(t_kriging)      :: self
+    class(t_kriging_ctx)  :: ctx
+
+    integer           :: ivar, k, kvar, k1, nx, nn, real_ivar, target_count, exact_pos
+    real, allocatable :: v(:), w(:)
+    real              :: val(max(1, self%nsim)), total_weight(self%ngroups)
+    real              :: target_mean, mean_ivar
+
+    associate( &
+      nnear  => ctx%nnear, &
+      inear  => ctx%inear, &
+      x      => ctx%x, &
+      block  => self%block)
+
+      nx = max(1, self%nsim)
+
+      do kvar = 1, size(x, 1)
+        val = 0.0
+        total_weight = 0.0
+
+        !-- Preserve exact interpolation for each target variable.  The
+        !   multi-RHS co-kriging solve still runs so other variables can be
+        !   estimated, but the exact target itself is hard data.
+        if (self%nsim == 0 .and. allocated(ctx%sqdist) .and. nnear(kvar) > 0) then
+          exact_pos = minloc(ctx%sqdist(1:nnear(kvar), kvar), dim=1)
+          if (ctx%sqdist(exact_pos, kvar) <= EPSLON) then
+            block%estimate(1, ctx%iblock, kvar) = self%obs(kvar)%value(inear(exact_pos, kvar))
+            block%variance(ctx%iblock, kvar, :) = 0.0
+            block%variance(ctx%iblock, :, kvar) = 0.0
+            block%variance(ctx%iblock, kvar, kvar) = self%obs(kvar)%variance(inear(exact_pos, kvar)) + &
+              self%block%localnugget(ctx%iblock)
+            cycle
+          end if
+        end if
+
+        !-- Local mean of the target variable for the ISAAKS correction.
+        target_mean = 0.0
+        target_count = 0
+        if (nnear(kvar) > 0) then
+          target_mean = target_mean + sum(self%obs(kvar)%value(inear(1:nnear(kvar), kvar)))
+          target_count = target_count + nnear(kvar)
+        end if
+        if (self%nsim > 0) then
+          ivar = self%nvar + kvar
+          if (ivar <= self%ngroups .and. nnear(ivar) > 0) then
+            do k = 1, nnear(ivar)
+              target_mean = target_mean + sum(block%estimate(1:nx, inear(k, ivar), kvar))
+            end do
+            target_count = target_count + nnear(ivar) * nx
+          end if
+        end if
+        if (target_count > 0) target_mean = target_mean / target_count
+
+        !-- Add weighted contributions from observations and, for SGSIM,
+        !   previously simulated blocks.
+        k1 = 0
+        do ivar = 1, self%ngroups
+          nn = nnear(ivar)
+          if (nn == 0) cycle
+          real_ivar = group_ivar(ivar, self%nvar)
+          w = x(kvar, k1+1:k1+nn)
+          total_weight(ivar) = sum(w)
+
+          if (ivar > self%nvar) then
+            do k = 1, nn
+              val = val + w(k) * block%estimate(1:nx, inear(k, ivar), real_ivar)
+            end do
+          else
+            v = self%obs(real_ivar)%value(inear(1:nn, ivar))
+            val = val + dot_product(w, v)
+            !-- ISAAKS & SRIVASTAVA co-kriging correction, generalized so
+            !   every target variable can be estimated from all variables.
+            if (self%unbias /= 0 .and. self%nvar > 1 .and. real_ivar /= kvar) then
+              mean_ivar = sum(v) / nn
+              val = val + total_weight(ivar) * (target_mean - mean_ivar)
+            end if
+          end if
+
+          k1 = k1 + nn
+        end do
+
+        !-- Simple kriging mean correction
+        if (self%unbias == 0 .and. self%sk_mean /= 0.0) &
+          val = val + (1.0 - sum(total_weight)) * self%sk_mean
+
+        !-- Scalar SGSIM stochastic perturbation.  Joint multivariable SGSIM
+        !   is handled by estimate_joint_cosim.
+        if (self%nsim > 0) &
+          val = val + sqrt(self%block%variance(ctx%iblock, kvar, kvar)) * self%block%sample(:, ctx%iblock)
+
+        !-- Clamp to bounds
+        where(val < self%bounds(1)) val = self%bounds(1)
+        where(val > self%bounds(2)) val = self%bounds(2)
+        block%estimate(1:nx, ctx%iblock, kvar) = val
+      end do
+    end associate
+  end subroutine estimate_standard
 
 
 !============================================================================
@@ -2422,7 +2505,8 @@ end subroutine update_info
   ! Serialise / deserialise per-block kriging weights to the factor file.
   !
   ! Factor file format (three lines per block, plus joint SGSIM solution rows):
-  !   Line 1: order(ib)  kriging_variance  nnear(1:ngroups)
+  !   Header: nblock nvar -2 nmax(1:nvar)
+  !   Line 1: order(ib)  variance(ib,1:nvar,1:nvar)  nnear(1:ngroups)
   !   Line 2: inear(1:nnear(1),1) ...  (neighbour indices)
   !   Line 3: weight(1:nnear(1),1) ... (primary-variable kriging weights)
   !   Joint SGSIM only: nvar extra lines containing x(kvar,1:matsize).
@@ -2434,15 +2518,16 @@ end subroutine update_info
   subroutine write_weight(self, ctx)
     class(t_kriging)     :: self
     class(t_kriging_ctx) :: ctx
-    integer              :: ii, kvar
+    integer              :: ii, kvar, kv
     associate( &
       ib    => ctx%iblock, &
-      order => self%block%order, &
-      var   => self%block%variance(ctx%iblock))
-      write(self%ifile, '(I0,x,G0.12,99(x,I0))') order(ib), var, ctx%nnear(1:self%ngroups)
+      order => self%block%order)
+      write(self%ifile, *) order(ib), &
+        ((self%block%variance(ib, kvar, kv), kvar=1, self%nvar), kv=1, self%nvar), &
+        ctx%nnear(1:self%ngroups)
       write(self%ifile, '(*(:2x,I0))')   (ctx%inear(1:ctx%nnear(ii), ii),  ii = 1, self%ngroups)
       write(self%ifile, '(*(:2x,F0.10))')(ctx%weight(1:ctx%nnear(ii), ii), ii = 1, self%ngroups)
-      if (self%nvar > 1 .and. self%nsim > 0) then
+      if (self%nvar > 1) then
         do kvar = 1, self%nvar
           write(self%ifile, '(*(:2x,G0.17))') ctx%x(kvar, 1:ctx%matsize)
         end do
@@ -2459,20 +2544,21 @@ end subroutine update_info
   ! output, so read_weight (use_old_weight path) can re-load it unchanged.
   !
   ! Three lines per block, with nvar extra x rows for joint SGSIM:
-  !   Line 1: original_block_index  kriging_variance  nnear(1:ngroups)
+  !   Line 1: original_block_index  variance(1:nvar,1:nvar)  nnear(1:ngroups)
   !   Line 2: inear indices, flat (all groups concatenated)
   !   Line 3: primary-variable kriging weights, flat
   !============================================================================
   subroutine write_weight_store(self)
     class(t_kriging) :: self
-    integer          :: ib, ii, ivar, ifile, kvar, matsize
+    integer          :: ib, ii, ivar, ifile, kvar, kv, matsize
 
     associate(ws => self%wstore)
       open(newunit=ifile, file=trim(self%weight_file), status='replace')
-      write(ifile, *) self%block%n, self%nvar, (self%obs(ivar)%nmax, ivar=1, self%nvar)
+      write(ifile, *) self%block%n, self%nvar, -2, (self%obs(ivar)%nmax, ivar=1, self%nvar)
       do ib = 1, self%block%n
-        write(ifile, '(I0,x,G0.12,99(x,I0))') self%block%order(ib), &
-          self%block%variance(ib), ws%nnear(1:self%ngroups, ib)
+        write(ifile, *) self%block%order(ib), &
+          ((self%block%variance(ib, kvar, kv), kvar=1, self%nvar), kv=1, self%nvar), &
+          ws%nnear(1:self%ngroups, ib)
         write(ifile, '(*(:2x,I0))') &
           (ws%inear (1:ws%nnear(ii,ib), ii, ib), ii = 1, self%ngroups)
         write(ifile, '(*(:2x,F0.10))') &
@@ -2492,20 +2578,34 @@ end subroutine update_info
   subroutine read_weight(self, ctx)
     class(t_kriging)     :: self
     class(t_kriging_ctx) :: ctx
-    integer              :: ii, kvar
+    integer              :: ii, kvar, kv
     associate( &
       ib    => ctx%iblock, &
-      order => self%block%order, &
-      var   => self%block%variance(ctx%iblock))
-      read(self%ifile, *) order(ib), var, ctx%nnear(1:self%ngroups)
+      order => self%block%order)
+      if (self%weight_file_full_variance) then
+        read(self%ifile, *) order(ib), &
+          ((self%block%variance(ib, kvar, kv), kvar=1, self%nvar), kv=1, self%nvar), &
+          ctx%nnear(1:self%ngroups)
+      else
+        self%block%variance(ib, :, :) = IEEE_VALUE(0.0, IEEE_QUIET_NAN)
+        read(self%ifile, *) order(ib), self%block%variance(ib, 1, 1), ctx%nnear(1:self%ngroups)
+      end if
       read(self%ifile, *) (ctx%inear(1:ctx%nnear(ii), ii),  ii = 1, self%ngroups)
       read(self%ifile, *) (ctx%weight(1:ctx%nnear(ii), ii), ii = 1, self%ngroups)
       ctx%npp = sum(ctx%nnear)
       ctx%matsize = ctx%npp + self%unbias + self%ndrift
-      if (self%nvar > 1 .and. self%nsim > 0) then
-        ctx%x = 0.0
+      ctx%x = 0.0
+      if (self%nvar > 1) then
         do kvar = 1, self%nvar
           read(self%ifile, *) ctx%x(kvar, 1:ctx%matsize)
+        end do
+      else
+        ii = 0
+        do kvar = 1, self%ngroups
+          if (ctx%nnear(kvar) > 0) then
+            ctx%x(1, ii+1:ii+ctx%nnear(kvar)) = ctx%weight(1:ctx%nnear(kvar), kvar)
+            ii = ii + ctx%nnear(kvar)
+          end if
         end do
       end if
     end associate
@@ -2617,6 +2717,7 @@ end subroutine update_info
     associate(b => self%block)
       call reset_data(b)
       if (allocated(b%estimate))      deallocate(b%estimate)
+      if (allocated(b%variance))       deallocate(b%variance)
       if (allocated(b%order))         deallocate(b%order)
       if (allocated(b%nblockpnt))     deallocate(b%nblockpnt)
       if (allocated(b%iblockpnt))     deallocate(b%iblockpnt)
@@ -2682,7 +2783,7 @@ end subroutine update_info
     allocate(self%wstore%nnear (ng, nb));       self%wstore%nnear  = 0
     allocate(self%wstore%inear (nm, ng, nb));   self%wstore%inear  = 0
     allocate(self%wstore%weight(nm, ng, nb));   self%wstore%weight = 0.0
-    if (self%nvar > 1 .and. self%nsim > 0) then
+    if (self%nvar > 1) then
       q = self%nvar
       self%wstore%q = q
       self%wstore%matsize_max = self%matsize_max

@@ -140,12 +140,20 @@ class TestSGSIM:
         k.set_vgm(ivar=2, jvar=2, vtype="sph", nugget=0.0, sill=1.0, a_major=1.0)
 
         k.solve()
-        primary, _ = k.get_results()
+        primary, primary_var = k.get_results()
         all_est = k.get_estimate_all()
         all_est_copy = k.get_estimate_all(copy=True)
+        all_var = k.get_variance_all()
+        all_var_copy = k.get_variance_all(copy=True)
 
         assert all_est.shape == (2, 3, 2)
+        assert all_var.shape == (3, 2, 2)
         np.testing.assert_allclose(all_est[:, :, 0], primary)
+        np.testing.assert_allclose(all_var[:, 0, 0], primary_var)
+        assert np.all(np.diagonal(all_var, axis1=1, axis2=2) >= -1e-10)
         assert all_est.flags.f_contiguous
+        assert all_var.flags.f_contiguous
         assert all_est_copy.flags.c_contiguous
+        assert all_var_copy.flags.c_contiguous
         np.testing.assert_allclose(all_est_copy, all_est)
+        np.testing.assert_allclose(all_var_copy, all_var)

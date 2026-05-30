@@ -167,6 +167,21 @@ class TestCoKrigingTextbook:
         assert est.shape == (_GRID.shape[0],)
         assert var.shape == (_GRID.shape[0],)
 
+    def test_estimate_all_variables_and_covariance_matrix(self, walker_all):
+        coord_v, val_v, coord_u, val_u = walker_all
+        k = _build_cok(coord_v, val_v, coord_u, val_u, _GRID)
+        primary, primary_var = k.get_results()
+        all_est = k.get_estimate_all()
+        est_cov = k.get_variance_all()
+
+        assert all_est.shape == (1, _GRID.shape[0], 2)
+        assert est_cov.shape == (_GRID.shape[0], 2, 2)
+        np.testing.assert_allclose(all_est[0, :, 0], primary)
+        np.testing.assert_allclose(est_cov[:, 0, 0], primary_var)
+        np.testing.assert_allclose(est_cov, np.swapaxes(est_cov, 1, 2), rtol=1e-10, atol=1e-10)
+        assert np.all(np.isfinite(all_est))
+        assert np.all(np.diagonal(est_cov, axis1=1, axis2=2) >= -1e-6)
+
     def test_variance_nonnegative(self, walker_all):
         coord_v, val_v, coord_u, val_u = walker_all
         k = _build_cok(coord_v, val_v, coord_u, val_u, _GRID)
